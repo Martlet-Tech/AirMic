@@ -13,7 +13,10 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 
+#include "ble_nus.h"
+
 void app_main(void)
 {
     printf("Hello world!\n");
+    ble_nus_init();
 }
