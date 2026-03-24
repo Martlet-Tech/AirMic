@@ -12,7 +12,7 @@
 #define MIC_BITS            32      // ICS43434 输出 32bit，有效位 24bit
 #define MIC_CHANNELS        2       // 立体声（双麦）
 #define MIC_DMA_BUF_COUNT   8
-#define MIC_DMA_BUF_LEN     1024
+#define MIC_DMA_BUF_LEN     511
 
 void mic_init(gpio_num_t ws, gpio_num_t clk, gpio_num_t sd);
 void mic_deinit(void);

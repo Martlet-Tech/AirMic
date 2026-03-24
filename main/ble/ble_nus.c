@@ -297,47 +297,6 @@ static void nimble_host_task(void *param)
 	nimble_port_freertos_deinit();
 }
 
-#if 0
-static void ble_test_task(void *arg)
-{
-	uint32_t count = 0;
-	while (1) {
-		if (g_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-			char buf[32];
-			int len = snprintf(buf, sizeof(buf), "AirMic tick %lu\n", count++);
-			ble_nus_send((uint8_t *)buf, len);
-		}
-		vTaskDelay(pdMS_TO_TICKS(1000));
-	}
-}
-#endif
-
-static void fc_uart_init(void)
-{
-	uart_config_t cfg = {
-		.baud_rate = FC_UART_BAUD,
-		.data_bits = UART_DATA_8_BITS,
-		.parity = UART_PARITY_DISABLE,
-		.stop_bits = UART_STOP_BITS_1,
-		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-	};
-	uart_driver_install(FC_UART_PORT, FC_UART_BUF, FC_UART_BUF, 0, NULL, 0);
-	uart_param_config(FC_UART_PORT, &cfg);
-	uart_set_pin(FC_UART_PORT, PIN_FC_TX, PIN_FC_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-	ESP_LOGI(TAG, "FC UART init done");
-}
-
-static void fc_uart_rx_task(void *arg)
-{
-	uint8_t buf[FC_UART_BUF];
-	while (1) {
-		int len = uart_read_bytes(FC_UART_PORT, buf, sizeof(buf), pdMS_TO_TICKS(20));
-		if (len > 0 && g_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-			ble_nus_send(buf, len);
-		}
-	}
-}
-
 // --------------------------------------------------------------------------
 // 对外初始化入口，在 app_main 里调用一次
 // --------------------------------------------------------------------------
@@ -365,7 +324,4 @@ void ble_nus_init(void)
 	nimble_port_freertos_init(nimble_host_task);
 
 	ESP_LOGI(TAG, "BLE NUS init done");
-
-	fc_uart_init();
-	xTaskCreate(fc_uart_rx_task, "fc_uart_rx", 4096, NULL, 5, NULL);
 }
