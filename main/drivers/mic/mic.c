@@ -36,6 +36,7 @@ void mic_init(gpio_num_t ws, gpio_num_t clk, gpio_num_t sd)
 	ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx_handle, &std_cfg));
 	ESP_ERROR_CHECK(i2s_channel_enable(s_rx_handle));
 	ESP_LOGI(TAG, "mic init ok, %dHz %dbit %dch", MIC_SAMPLE_RATE, MIC_BITS, MIC_CHANNELS);
+	ESP_LOGI(TAG, "mic handle = %p", (void *)s_rx_handle);
 }
 
 void mic_deinit(void)
@@ -50,10 +51,6 @@ void mic_deinit(void)
 int mic_read(void *buf, size_t buf_bytes, uint32_t timeout_ms)
 {
 	size_t bytes_read = 0;
-	esp_err_t ret = i2s_channel_read(s_rx_handle, buf, buf_bytes, &bytes_read, pdMS_TO_TICKS(timeout_ms));
-	ESP_LOGI("mic", "read ret=%d bytes_read=%d", ret, (int)bytes_read);
-
-	//if (ret != ESP_OK)
-	//	return -1;
+	i2s_channel_read(s_rx_handle, buf, buf_bytes, &bytes_read, pdMS_TO_TICKS(timeout_ms));
 	return (int)bytes_read;
 }
