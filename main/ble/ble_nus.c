@@ -283,7 +283,7 @@ static void fc_uart_init(void)
 	};
 	uart_driver_install(FC_UART_PORT, FC_UART_BUF, FC_UART_BUF, 0, NULL, 0);
 	uart_param_config(FC_UART_PORT, &cfg);
-	uart_set_pin(FC_UART_PORT, FC_UART_TX_PIN, FC_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+	uart_set_pin(FC_UART_PORT, PIN_FC_TX, PIN_FC_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 	ESP_LOGI(TAG, "FC UART init done");
 }
 

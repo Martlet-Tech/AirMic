@@ -1,0 +1,148 @@
+#include "recorder.h"
+#include "led.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/uart.h"
+
+// ── 引用 bsp 里定义的 FC UART 引脚 ──────────────────────────
+// main.c 里 include 了 bsp_v1.h，这里用外部声明方式获取引脚
+// 实际上 bsp.h 会在编译单元里通过 INCLUDE_DIRS 找到
+#include "bsp.h"
+
+static const char *TAG = "recorder";
+
+#define FC_UART_PORT   UART_NUM_1
+#define FC_UART_BAUD   115200
+#define POLL_INTERVAL_MS 100
+
+// MSP 命令：STATUS（查询飞控是否解锁）
+// MSP v1 格式: $M< + size + cmd + checksum
+static const uint8_t MSP_STATUS_REQ[] = {
+    '$', 'M', '<',
+    0x00,        // payload size = 0
+    0x65,        // cmd = 101 (MSP_STATUS)
+    0x65         // checksum = size ^ cmd = 0 ^ 0x65
+};
+
+static TaskHandle_t s_task = NULL;
+static bool s_running      = false;
+static bool s_armed        = false;
+static bool s_recording    = false;
+static bool s_manual_stop  = false;   // 手动停止标志
+
+// ── 录音开始/停止（占位，接 mic 驱动时替换）─────────────────
+static void recording_begin(void)
+{
+    if (s_recording) return;
+    s_recording = true;
+    led_set_mode(LED_MODE_RECORDING);
+    ESP_LOGI(TAG, "recording START");
+    // TODO: mic_record_start(PIN_I2S_WS, PIN_I2S_CLK, PIN_I2S_SD);
+}
+
+static void recording_end(void)
+{
+    if (!s_recording) return;
+    s_recording = false;
+    led_set_mode(LED_MODE_IDLE);
+    ESP_LOGI(TAG, "recording STOP");
+    // TODO: mic_record_stop();
+}
+
+// ── 解析 MSP_STATUS 响应，提取 armed 标志位 ─────────────────
+// MSP v1 响应: $M> + size + cmd + payload[0..n] + checksum
+// MSP_STATUS payload[6..7] = flags，bit0 = armed
+static bool parse_armed(const uint8_t *buf, int len)
+{
+    // 最小长度：3头 + 1size + 1cmd + 至少7字节payload + 1checksum
+    if (len < 13) return false;
+    if (buf[0] != '$' || buf[1] != 'M' || buf[2] != '>') return false;
+
+    uint8_t payload_size = buf[3];
+    if (len < 5 + payload_size + 1) return false;
+
+    // payload 从 buf[5] 开始，flags 在 offset 6~7（uint16）
+    if (payload_size < 8) return false;
+    uint16_t flags = buf[5 + 6] | (buf[5 + 7] << 8);
+    return (flags & 0x0001) != 0;   // bit0 = ARMED
+}
+
+// ── FC 轮询任务 ──────────────────────────────────────────────
+static void recorder_task(void *arg)
+{
+    uint8_t rx_buf[128];
+
+    while (s_running) {
+        // 发送 MSP_STATUS 请求
+        uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
+
+        // 等待响应
+        vTaskDelay(pdMS_TO_TICKS(20));
+        int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf),
+                                  pdMS_TO_TICKS(30));
+
+        if (len > 0) {
+            bool armed = parse_armed(rx_buf, len);
+
+            if (armed != s_armed) {
+                s_armed = armed;
+                ESP_LOGI(TAG, "FC armed = %d", s_armed);
+
+                if (s_armed && !s_manual_stop) {
+                    recording_begin();
+                } else {
+                    recording_end();
+                    s_manual_stop = false;   // 落地后重置手动标志
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+    }
+
+    recording_end();
+    vTaskDelete(NULL);
+}
+
+// ── 对外接口 ─────────────────────────────────────────────────
+void recorder_start(void)
+{
+    if (s_task != NULL) return;
+
+    // UART 初始化
+    uart_config_t cfg = {
+        .baud_rate = FC_UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_driver_install(FC_UART_PORT, 256, 256, 0, NULL, 0);
+    uart_param_config(FC_UART_PORT, &cfg);
+    uart_set_pin(FC_UART_PORT, PIN_FC_TX, PIN_FC_RX,
+                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+    s_running = true;
+    led_set_mode(LED_MODE_IDLE);
+    xTaskCreate(recorder_task, "recorder", 4096, NULL, 5, &s_task);
+    ESP_LOGI(TAG, "recorder mode started");
+}
+
+void recorder_stop(void)
+{
+    s_running = false;
+    s_task    = NULL;
+    uart_driver_delete(FC_UART_PORT);
+    ESP_LOGI(TAG, "recorder mode stopped");
+}
+
+void recorder_toggle(void)
+{
+    if (s_recording) {
+        s_manual_stop = true;
+        recording_end();
+    } else {
+        recording_begin();
+    }
+}
