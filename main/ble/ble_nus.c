@@ -23,6 +23,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "bsp.h"
+#include "airmicprotocol.h"
 
 // --------------------------------------------------------------------------
 // 设备名，将来改这一行就够了
@@ -56,6 +57,12 @@ static ble_uuid128_t airmic_svc_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 
 static ble_uuid128_t airmic_status_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
 							   0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x11);
 
+static ble_uuid128_t airmic_ctrl_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+							 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x12);
+
+static ble_uuid128_t airmic_resp_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+							 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x13);
+
 static const char *TAG = "AirMic_BLE";
 
 // --------------------------------------------------------------------------
@@ -64,6 +71,9 @@ static const char *TAG = "AirMic_BLE";
 static uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_nus_rx_handle = 0; // Notify handle（发给手机）
 static uint8_t g_armed = 0; // FC 解锁状态，外部写入
+static uint16_t g_airmic_resp_handle = 0;
+
+static void ble_start_advertising(void);
 
 // --------------------------------------------------------------------------
 // 对外接口：把数据透传给已连接的 BLE Central（Betaflight Configurator）
@@ -119,6 +129,29 @@ static int dummy_access_cb(uint16_t conn_handle, uint16_t attr_handle, struct bl
 	return 0;
 }
 
+// ctrl write 回调
+static int airmic_ctrl_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+	if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+		uint8_t buf[64];
+		uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+		if (len > sizeof(buf))
+			len = sizeof(buf);
+		os_mbuf_copydata(ctxt->om, 0, len, buf);
+		airmic_protocol_on_write(conn_handle, buf, len);
+	}
+	return 0;
+}
+
+// notify 接口，给 airmicprotocol.c 调用
+void ble_airmic_notify(uint16_t conn_handle, uint16_t attr_handle, const uint8_t *data, uint16_t len)
+{
+	struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+	if (!om)
+		return;
+	ble_gatts_notify_custom(conn_handle, g_airmic_resp_handle, om);
+}
+
 // --------------------------------------------------------------------------
 // GATT Service 表
 // --------------------------------------------------------------------------
@@ -157,14 +190,20 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 		.characteristics =
 			(struct ble_gatt_chr_def[]){
 
-				// Status Char：只读，返回 armed/recording 状态
+				// Control Point：手机写命令过来
 				{
-					.uuid = &airmic_status_uuid.u,
-					.access_cb = airmic_status_access,
-					.flags = BLE_GATT_CHR_F_READ,
+					.uuid = &airmic_ctrl_uuid.u,
+					.access_cb = airmic_ctrl_access,
+					.flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
 				},
 
-				// 以后在这里加：config char、command char 等
+				// Response：板子 notify 回手机
+				{
+					.uuid = &airmic_resp_uuid.u,
+					.access_cb = dummy_access_cb,
+					.flags = BLE_GATT_CHR_F_NOTIFY,
+					.val_handle = &g_airmic_resp_handle,
+				},
 
 				{ 0 } },
 	},
@@ -193,7 +232,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 	case BLE_GAP_EVENT_DISCONNECT:
 		ESP_LOGI(TAG, "BLE disconnected, reason=%d", event->disconnect.reason);
 		g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-		ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, NULL, gap_event_handler, NULL);
+		g_nus_rx_handle = 0;
+		ble_start_advertising();
 		break;
 
 	case BLE_GAP_EVENT_MTU:
@@ -292,7 +332,7 @@ static void fc_uart_rx_task(void *arg)
 	uint8_t buf[FC_UART_BUF];
 	while (1) {
 		int len = uart_read_bytes(FC_UART_PORT, buf, sizeof(buf), pdMS_TO_TICKS(20));
-		if (len > 0) {
+		if (len > 0 && g_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
 			ble_nus_send(buf, len);
 		}
 	}
