@@ -102,6 +102,8 @@ static int nus_tx_chr_access(uint16_t conn_handle, uint16_t attr_handle, struct 
 			len = sizeof(buf);
 		os_mbuf_copydata(ctxt->om, 0, len, buf);
 
+		ESP_LOGI(TAG, "NUS TX → FC UART %d bytes", len);
+
 		// 实际 UART 发送函数
 		uart_write_bytes(FC_UART_PORT, buf, len);
 		ESP_LOGI(TAG, "NUS TX recv %d bytes → FC UART", len);
@@ -167,16 +169,16 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 				// TX Char：Central 写数据过来（MSP 命令 → FC）
 				{
 					.uuid = &nus_tx_uuid.u,
-					.access_cb = nus_tx_chr_access,
-					.flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+					.access_cb = dummy_access_cb,
+					.flags = BLE_GATT_CHR_F_NOTIFY,
+					.val_handle = &g_nus_rx_handle,
 				},
 
 				// RX Char：我们 Notify 给 Central（FC 返回数据 → BF Configurator）
 				{
 					.uuid = &nus_rx_uuid.u,
-					.access_cb = dummy_access_cb,
-					.flags = BLE_GATT_CHR_F_NOTIFY,
-					.val_handle = &g_nus_rx_handle,
+					.access_cb = nus_tx_chr_access,
+					.flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
 				},
 
 				{ 0 } // 结束符
@@ -227,6 +229,9 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 			// 断开后重新广播
 			ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, NULL, gap_event_handler, NULL);
 		}
+		break;
+	case BLE_GAP_EVENT_SUBSCRIBE:
+		ESP_LOGI(TAG, "subscribe: handle=%d reason=%d", event->subscribe.attr_handle, event->subscribe.reason);
 		break;
 
 	case BLE_GAP_EVENT_DISCONNECT:

@@ -18,7 +18,7 @@
 #define PIN_I2S_CLK GPIO_NUM_11
 #define PIN_I2S_SD GPIO_NUM_10
 
-#define PIN_FC_RX GPIO_NUM_1 // FC_UTX → ESP RX
-#define PIN_FC_TX GPIO_NUM_2 // FC_URX → ESP TX
+#define PIN_TX GPIO_NUM_1 // ESP TX
+#define PIN_RX GPIO_NUM_2 // ESP RX
 
 #endif

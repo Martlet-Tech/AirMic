@@ -28,7 +28,10 @@ static const char *TAG = "recorder";
 #define READ_BUF_BYTES (READ_BUF_FRAMES * WAV_CHANNELS * sizeof(int32_t))
 
 // MSP STATUS 请求包
-static const uint8_t MSP_STATUS_REQ[] = { '$', 'M', '<', 0x00, 0x65, 0x65 };
+const uint8_t MSP_STATUS_REQ[] = { '$', 'M', '<', 0x00, 0x65, 0x65 };
+
+// version cmd:  size=0, cmd=1, checksum=0x01
+const uint8_t MSP_API_VERSION_REQ[] = { '$', 'M', '<', 0x00, 0x01, 0x01 };
 
 static TaskHandle_t s_poll_task = NULL;
 static TaskHandle_t s_record_task = NULL;
@@ -169,11 +172,19 @@ static void poll_task(void *arg)
 	uint8_t rx_buf[128];
 
 	while (s_running) {
-		uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
+		//uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
+		//uart_write_bytes(FC_UART_PORT, MSP_API_VERSION_REQ, sizeof(MSP_API_VERSION_REQ));
 		vTaskDelay(pdMS_TO_TICKS(20));
-		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(30));
 
+		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(30));
 		if (len > 0) {
+			//ESP_LOGI(TAG, "rx len=%d", len); // ← 加这行
+			for (int i = 0; i < len; i++) {
+				printf("0x%02X ", rx_buf[i]);
+			}
+			printf("\n");
+			fflush(stdout);
+
 			bool armed = parse_armed(rx_buf, len);
 			if (armed != s_armed) {
 				s_armed = armed;
@@ -209,7 +220,7 @@ void recorder_start(void)
 	};
 	uart_driver_install(FC_UART_PORT, 256, 256, 0, NULL, 0);
 	uart_param_config(FC_UART_PORT, &cfg);
-	uart_set_pin(FC_UART_PORT, PIN_FC_TX, PIN_FC_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+	uart_set_pin(FC_UART_PORT, PIN_TX, PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
 	mic_init(PIN_I2S_WS, PIN_I2S_CLK, PIN_I2S_SD);
 	ESP_LOGI(TAG, "mic_init done");
