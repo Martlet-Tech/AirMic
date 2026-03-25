@@ -24,12 +24,12 @@ static void bridge_rx_task(void *arg)
 		int len = uart_read_bytes(FC_UART_PORT, buf, sizeof(buf), pdMS_TO_TICKS(20));
 
 		if (len > 0) {
-			ESP_LOGI(TAG, "FC → BLE %d bytes", len);
+			/*ESP_LOGI(TAG, "FC → BLE %d bytes", len);
 			for (int i = 0; i < len; i++) {
 				printf("0x%02X ", buf[i]);
 			}
 			printf("\n");
-			fflush(stdout);
+			fflush(stdout);*/
 			ble_nus_send(buf, len);
 		}
 	}
@@ -42,6 +42,7 @@ void ble_bridge_start(void)
 		return;
 
 	if (uart_is_driver_installed(FC_UART_PORT)) {
+		ESP_LOGW(TAG, "UART driver still installed, cleaning up...");
 		uart_driver_delete(FC_UART_PORT);
 	}
 
@@ -65,7 +66,16 @@ void ble_bridge_start(void)
 void ble_bridge_stop(void)
 {
 	s_running = false;
+	vTaskDelay(pdMS_TO_TICKS(50));
+
+	if (s_task != NULL) {
+		// 如果任务没退，这里比较危险，最好也用信号量等待
+		// 暂时保持原样，但建议加上同步机制
+	}
 	s_task = NULL;
-	uart_driver_delete(FC_UART_PORT);
+
+	if (uart_is_driver_installed(FC_UART_PORT)) {
+		uart_driver_delete(FC_UART_PORT);
+	}
 	ESP_LOGI(TAG, "ble_bridge mode stopped");
 }

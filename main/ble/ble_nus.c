@@ -221,6 +221,29 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 	{ 0 } // GATT 表结束符
 };
 
+static const struct ble_gap_upd_params fast_conn_params = {
+	.itvl_min = 0x0006, // 0x0006 * 1.25ms = 7.5ms
+	.itvl_max = 0x000C, // 0x000C * 1.25ms = 15ms
+	.latency = 0, // 0 延迟，保证实时性
+	.supervision_timeout = 0x0100, // 100 * 10ms = 1000ms (超时时间)
+	.min_ce_len = 0x0000,
+	.max_ce_len = 0x0000,
+};
+
+void ble_bridge_request_fast_connection(uint16_t conn_handle)
+{
+	int rc;
+	ESP_LOGI(TAG, "Requesting fast connection params...");
+
+	// 发起连接参数更新请求
+	// 注意：这只是“请求”，手机可能会拒绝，但大多数现代手机 (iOS/Android) 对于 7.5ms-15ms 都会接受
+	rc = ble_gap_update_params(conn_handle, &fast_conn_params);
+
+	if (rc != 0) {
+		ESP_LOGE(TAG, "Failed to request params update: %d", rc);
+	}
+}
+
 // --------------------------------------------------------------------------
 // GAP 事件回调
 // --------------------------------------------------------------------------
@@ -234,6 +257,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 		if (event->connect.status == 0) {
 			g_conn_handle = event->connect.conn_handle;
 			ESP_LOGI(TAG, "BLE connected, handle=%d", g_conn_handle);
+			ble_bridge_request_fast_connection(g_conn_handle);
 		} else {
 			// status=26 时连接可能仍然有效，conn_handle 也是真实的
 			if (event->connect.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
@@ -262,6 +286,18 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
 	case BLE_GAP_EVENT_MTU:
 		ESP_LOGI(TAG, "MTU updated: %d", event->mtu.value);
+		break;
+
+	case BLE_GAP_EVENT_CONN_UPDATE:
+		// 可选：打印更新结果，确认是否成功
+		if (event->conn_update.status == 0) {
+			ESP_LOGI(TAG, "Connection params updated successfully!");
+			//ESP_LOGI(TAG, "Interval: %d ms", event->conn_update.conn_itvl * 1.25);
+		} else {
+			ESP_LOGW(TAG, "Connection params update rejected by peer (status=%d)",
+				 event->conn_update.status);
+			// 如果被拒绝，可能是手机不支持这么快的速度，或者需要先配对
+		}
 		break;
 
 	default:
@@ -321,6 +357,18 @@ static void nimble_host_task(void *param)
 	nimble_port_freertos_deinit();
 }
 
+static void disable_nimble_verbose_logs()
+{
+	// "NimBLE" 是你在日志里看到的标签
+	esp_log_level_set("NimBLE", ESP_LOG_WARN);
+
+	// 如果有其他蓝牙相关标签，也可以一起关掉
+	esp_log_level_set("BLE_GATT", ESP_LOG_WARN);
+	esp_log_level_set("BLE_GAP", ESP_LOG_WARN);
+	esp_log_level_set("BLE_HS", ESP_LOG_WARN);
+
+	ESP_LOGI("TAG", "Verbose NimBLE logs disabled.");
+}
 // --------------------------------------------------------------------------
 // 对外初始化入口，在 app_main 里调用一次
 // --------------------------------------------------------------------------
@@ -328,13 +376,14 @@ void ble_nus_init(void)
 {
 	ESP_ERROR_CHECK(nvs_flash_init());
 
+	disable_nimble_verbose_logs();
 	nimble_port_init();
 
 	// ← 加这几行，关掉 SC 避免协商失败
 	ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
-	ble_hs_cfg.sm_bonding = 0;
-	ble_hs_cfg.sm_mitm = 0;
-	ble_hs_cfg.sm_sc = 0; // 关掉 LE Secure Connections
+	//ble_hs_cfg.sm_bonding = 0;
+	//ble_hs_cfg.sm_mitm = 0;
+	//ble_hs_cfg.sm_sc = 0; // 关掉 LE Secure Connections
 
 	ble_svc_gap_init();
 	ble_svc_gatt_init();
