@@ -9,6 +9,7 @@
 #include "driver/uart.h"
 #include <stdio.h>
 #include <string.h>
+#include "ble_nus.h"
 
 static const char *TAG = "recorder";
 
@@ -174,16 +175,18 @@ static void poll_task(void *arg)
 	while (s_running) {
 		//uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
 		//uart_write_bytes(FC_UART_PORT, MSP_API_VERSION_REQ, sizeof(MSP_API_VERSION_REQ));
-		vTaskDelay(pdMS_TO_TICKS(20));
+		//vTaskDelay(pdMS_TO_TICKS(20));
 
 		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(30));
 		if (len > 0) {
+			ble_nus_send(rx_buf, len);
 			//ESP_LOGI(TAG, "rx len=%d", len); // ← 加这行
+			/*printf("poll_task: rx len=%d ", len);
 			for (int i = 0; i < len; i++) {
 				printf("0x%02X ", rx_buf[i]);
 			}
 			printf("\n");
-			fflush(stdout);
+			fflush(stdout);*/
 
 			bool armed = parse_armed(rx_buf, len);
 			if (armed != s_armed) {
@@ -199,7 +202,7 @@ static void poll_task(void *arg)
 				}
 			}
 		}
-		vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+		//vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
 	}
 	vTaskDelete(NULL);
 }

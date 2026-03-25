@@ -28,7 +28,7 @@
 // --------------------------------------------------------------------------
 // 设备名，将来改这一行就够了
 // --------------------------------------------------------------------------
-#define DEVICE_NAME "AirMic"
+#define DEVICE_NAME "AirMic.Martlet"
 
 #define FC_UART_PORT UART_NUM_1
 
@@ -45,11 +45,11 @@
 static ble_uuid128_t nus_svc_uuid = BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3,
 						     0xb5, 0x01, 0x00, 0x40, 0x6e);
 
-static ble_uuid128_t nus_tx_uuid = BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3,
-						    0xb5, 0x02, 0x00, 0x40, 0x6e);
+static ble_uuid128_t nus_readCharacteristic_uuid = BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+								    0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40, 0x6e);
 
-static ble_uuid128_t nus_rx_uuid = BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3,
-						    0xb5, 0x03, 0x00, 0x40, 0x6e);
+static ble_uuid128_t nus_writeCharacteristic_uuid = BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+								     0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40, 0x6e);
 
 static ble_uuid128_t airmic_svc_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
 							0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10);
@@ -82,11 +82,14 @@ static void ble_start_advertising(void);
 void ble_nus_send(const uint8_t *data, uint16_t len)
 {
 	if (g_conn_handle == BLE_HS_CONN_HANDLE_NONE || g_nus_rx_handle == 0) {
+		ESP_LOGW(TAG, "ble_nus_send: no active connection %d or RX handle %d", g_conn_handle, g_nus_rx_handle);
 		return;
 	}
 	struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-	if (!om)
+	if (!om) {
+		ESP_LOGW(TAG, "ble_nus_send: failed to create mbuf");
 		return;
+	}
 	ble_gatts_notify_custom(g_conn_handle, g_nus_rx_handle, om);
 }
 
@@ -102,11 +105,14 @@ static int nus_tx_chr_access(uint16_t conn_handle, uint16_t attr_handle, struct 
 			len = sizeof(buf);
 		os_mbuf_copydata(ctxt->om, 0, len, buf);
 
-		ESP_LOGI(TAG, "NUS TX → FC UART %d bytes", len);
-
+		/*ESP_LOGI(TAG, "Received from Bluetooth %d bytes", len);
+		for (int i = 0; i < len; i++) {
+			printf("0x%02X ", buf[i]);
+		}
+		printf("\n");
+		fflush(stdout);*/
 		// 实际 UART 发送函数
 		uart_write_bytes(FC_UART_PORT, buf, len);
-		ESP_LOGI(TAG, "NUS TX recv %d bytes → FC UART", len);
 	}
 	return 0;
 }
@@ -128,6 +134,7 @@ static int airmic_status_access(uint16_t conn_handle, uint16_t attr_handle, stru
 
 static int dummy_access_cb(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
+	ESP_LOGI(TAG, "dummy_access_cb: handle=%d", attr_handle);
 	return 0;
 }
 
@@ -165,10 +172,11 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 		.uuid = &nus_svc_uuid.u,
 		.characteristics =
 			(struct ble_gatt_chr_def[]){
-
+				// https://github.com/betaflight/betaflight-configurator/blob/master/src/js/protocols/devices.js
+				// 参考这里的uuid与读写的关系, 跟正常的情况不同
 				// TX Char：Central 写数据过来（MSP 命令 → FC）
 				{
-					.uuid = &nus_tx_uuid.u,
+					.uuid = &nus_readCharacteristic_uuid.u,
 					.access_cb = dummy_access_cb,
 					.flags = BLE_GATT_CHR_F_NOTIFY,
 					.val_handle = &g_nus_rx_handle,
@@ -176,7 +184,7 @@ static const struct ble_gatt_svc_def g_gatt_svcs[] = {
 
 				// RX Char：我们 Notify 给 Central（FC 返回数据 → BF Configurator）
 				{
-					.uuid = &nus_rx_uuid.u,
+					.uuid = &nus_writeCharacteristic_uuid.u,
 					.access_cb = nus_tx_chr_access,
 					.flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
 				},
@@ -220,24 +228,35 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 {
 	switch (event->type) {
 	case BLE_GAP_EVENT_CONNECT:
+		ESP_LOGI(TAG, "GAP CONNECT event: status=%d conn_handle=%d", event->connect.status,
+			 event->connect.conn_handle);
+
 		if (event->connect.status == 0) {
 			g_conn_handle = event->connect.conn_handle;
 			ESP_LOGI(TAG, "BLE connected, handle=%d", g_conn_handle);
 		} else {
-			ESP_LOGW(TAG, "BLE connect failed, restarting adv");
-			g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-			// 断开后重新广播
-			ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, NULL, gap_event_handler, NULL);
+			// status=26 时连接可能仍然有效，conn_handle 也是真实的
+			if (event->connect.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+				g_conn_handle = event->connect.conn_handle; // ← 关键
+				ESP_LOGW(TAG, "connect param negotiation failed(%d), but using handle=%d",
+					 event->connect.status, g_conn_handle);
+			} else {
+				ESP_LOGW(TAG, "connect truly failed, status=%d, restarting adv", event->connect.status);
+				ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, NULL, gap_event_handler,
+						  NULL);
+			}
 		}
 		break;
 	case BLE_GAP_EVENT_SUBSCRIBE:
-		ESP_LOGI(TAG, "subscribe: handle=%d reason=%d", event->subscribe.attr_handle, event->subscribe.reason);
+		ESP_LOGI(TAG, "subscribe: handle=%d reason=%d cur_notify=%d nus_rx_handle=%d",
+			 event->subscribe.attr_handle, event->subscribe.reason, event->subscribe.cur_notify,
+			 g_nus_rx_handle);
 		break;
 
 	case BLE_GAP_EVENT_DISCONNECT:
 		ESP_LOGI(TAG, "BLE disconnected, reason=%d", event->disconnect.reason);
 		g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-		g_nus_rx_handle = 0;
+		//g_nus_rx_handle = 0;
 		ble_start_advertising();
 		break;
 
@@ -310,6 +329,12 @@ void ble_nus_init(void)
 	ESP_ERROR_CHECK(nvs_flash_init());
 
 	nimble_port_init();
+
+	// ← 加这几行，关掉 SC 避免协商失败
+	ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+	ble_hs_cfg.sm_bonding = 0;
+	ble_hs_cfg.sm_mitm = 0;
+	ble_hs_cfg.sm_sc = 0; // 关掉 LE Secure Connections
 
 	ble_svc_gap_init();
 	ble_svc_gatt_init();
