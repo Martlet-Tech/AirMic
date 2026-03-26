@@ -176,21 +176,11 @@ static void poll_task(void *arg)
 	uint8_t rx_buf[128];
 
 	while (s_running) {
-		//uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
-		//uart_write_bytes(FC_UART_PORT, MSP_API_VERSION_REQ, sizeof(MSP_API_VERSION_REQ));
-		//vTaskDelay(pdMS_TO_TICKS(20));
+		uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
+		vTaskDelay(pdMS_TO_TICKS(20));
 
 		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(30));
 		if (len > 0) {
-			ble_nus_send(rx_buf, len);
-			//ESP_LOGI(TAG, "rx len=%d", len); // ← 加这行
-			/*printf("poll_task: rx len=%d ", len);
-			for (int i = 0; i < len; i++) {
-				printf("0x%02X ", rx_buf[i]);
-			}
-			printf("\n");
-			fflush(stdout);*/
-
 			bool armed = parse_armed(rx_buf, len);
 			if (armed != s_armed) {
 				s_armed = armed;
@@ -205,7 +195,7 @@ static void poll_task(void *arg)
 				}
 			}
 		}
-		//vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+		vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
 	}
 
 	// 任务即将退出，通知等待者
