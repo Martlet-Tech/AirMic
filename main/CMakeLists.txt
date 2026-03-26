@@ -12,6 +12,6 @@ idf_component_register(
 		${SRC_APP}
         PRIV_REQUIRES spi_flash
 	REQUIRES bt nvs_flash driver fatfs sdmmc
-	INCLUDE_DIRS "" "boards" "ble"  "app" "app/recorder" "app/ble_bridge" "app/rid" "app/airmicprotocol"
+	INCLUDE_DIRS "" "boards" "ble"  "app" "app/airmicprotocol" "app/fc_link" "app/recorder"  "app/rid"  
 		"drivers" "drivers/led" "drivers/button" "drivers/mic" "drivers/sdcard"
 )

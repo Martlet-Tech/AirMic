@@ -21,4 +21,6 @@
 #define PIN_TX GPIO_NUM_1 // ESP TX
 #define PIN_RX GPIO_NUM_2 // ESP RX
 
+#define FC_UART_PORT UART_NUM_1
+
 #endif

@@ -68,7 +68,7 @@ static const char *TAG = "AirMic_BLE";
 // --------------------------------------------------------------------------
 // 全局状态
 // --------------------------------------------------------------------------
-static uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_nus_rx_handle = 0; // Notify handle（发给手机）
 static uint8_t g_armed = 0; // FC 解锁状态，外部写入
 static uint16_t g_airmic_resp_handle = 0;

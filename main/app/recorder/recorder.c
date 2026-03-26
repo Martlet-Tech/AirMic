@@ -14,10 +14,6 @@
 
 static const char *TAG = "recorder";
 
-#define FC_UART_PORT UART_NUM_1
-#define FC_UART_BAUD 115200
-#define POLL_INTERVAL_MS 100
-
 // WAV 参数
 #define WAV_SAMPLE_RATE MIC_SAMPLE_RATE // 48000
 #define WAV_CHANNELS MIC_CHANNELS // 2
@@ -29,20 +25,8 @@ static const char *TAG = "recorder";
 #define READ_BUF_FRAMES 512
 #define READ_BUF_BYTES (READ_BUF_FRAMES * WAV_CHANNELS * sizeof(int32_t))
 
-// MSP STATUS 请求包
-const uint8_t MSP_STATUS_REQ[] = { '$', 'M', '<', 0x00, 0x65, 0x65 };
-
-// version cmd:  size=0, cmd=1, checksum=0x01
-const uint8_t MSP_API_VERSION_REQ[] = { '$', 'M', '<', 0x00, 0x01, 0x01 };
-
-static TaskHandle_t s_poll_task = NULL;
 static TaskHandle_t s_record_task = NULL;
-static bool s_running = false;
-static bool s_armed = false;
 static bool s_recording = false;
-static bool s_manual_stop = false;
-
-static SemaphoreHandle_t s_poll_exit_sem = NULL;
 
 // ── WAV 头结构 ────────────────────────────────────────────────
 typedef struct __attribute__((packed)) {
@@ -156,128 +140,33 @@ static void record_task(void *arg)
 	vTaskDelete(NULL);
 }
 
-// ── MSP 解析 armed ───────────────────────────────────────────
-static bool parse_armed(const uint8_t *buf, int len)
-{
-	if (len < 13)
-		return false;
-	if (buf[0] != '$' || buf[1] != 'M' || buf[2] != '>')
-		return false;
-	uint8_t payload_size = buf[3];
-	if (len < 5 + payload_size + 1 || payload_size < 8)
-		return false;
-	uint16_t flags = buf[5 + 6] | (buf[5 + 7] << 8);
-	return (flags & 0x0001) != 0;
-}
-
-// ── FC 轮询任务 ──────────────────────────────────────────────
-static void poll_task(void *arg)
-{
-	uint8_t rx_buf[128];
-
-	while (s_running) {
-		uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
-		vTaskDelay(pdMS_TO_TICKS(20));
-
-		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(30));
-		if (len > 0) {
-			bool armed = parse_armed(rx_buf, len);
-			if (armed != s_armed) {
-				s_armed = armed;
-				ESP_LOGI(TAG, "FC armed=%d", armed);
-
-				if (armed && !s_manual_stop && s_record_task == NULL) {
-					s_recording = true;
-					xTaskCreate(record_task, "record", 8192, NULL, 5, &s_record_task);
-				} else if (!armed) {
-					s_recording = false;
-					s_manual_stop = false;
-				}
-			}
-		}
-		vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
-	}
-
-	// 任务即将退出，通知等待者
-	if (s_poll_exit_sem != NULL) {
-		xSemaphoreGive(s_poll_exit_sem);
-	}
-	s_poll_task = NULL; // 清空句柄
-	vTaskDelete(NULL);
-}
-
 // ── 对外接口 ─────────────────────────────────────────────────
 void recorder_start(void)
 {
-	ESP_LOGI(TAG, "recorder_start begin");
-	if (s_poll_task)
+	led_set_mode(LED_MODE_RECORDING);
+
+	if (s_recording || s_record_task != NULL)
 		return;
 
-	uart_config_t cfg = {
-		.baud_rate = FC_UART_BAUD,
-		.data_bits = UART_DATA_8_BITS,
-		.parity = UART_PARITY_DISABLE,
-		.stop_bits = UART_STOP_BITS_1,
-		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-	};
-	uart_driver_install(FC_UART_PORT, 256, 256, 0, NULL, 0);
-	uart_param_config(FC_UART_PORT, &cfg);
-	uart_set_pin(FC_UART_PORT, PIN_TX, PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-
-	mic_init(PIN_I2S_WS, PIN_I2S_CLK, PIN_I2S_SD);
-	ESP_LOGI(TAG, "mic_init done");
-
-	if (s_poll_exit_sem == NULL) {
-		s_poll_exit_sem = xSemaphoreCreateBinary();
-	}
-
-	s_running = true;
-	led_set_mode(LED_MODE_IDLE);
-	xTaskCreate(poll_task, "fc_poll", 4096, NULL, 5, &s_poll_task);
+	xTaskCreate(record_task, "record", 8192, NULL, 5, &s_record_task);
+	s_recording = true;
 	ESP_LOGI(TAG, "recorder started");
 }
 
 void recorder_stop(void)
 {
-	if (!s_running)
-		return;
+	led_set_mode(LED_MODE_IDLE);
 
-	s_running = false;
 	s_recording = false;
-	ESP_LOGI(TAG, "recorder stopping, waiting for task exit...");
-
-	// 等待任务退出信号，最大等待 2 秒，防止死锁
-	if (s_poll_exit_sem != NULL) {
-		if (xSemaphoreTake(s_poll_exit_sem, pdMS_TO_TICKS(2000)) == pdTRUE) {
-			ESP_LOGI(TAG, "poll_task exited successfully");
-		} else {
-			ESP_LOGE(TAG, "poll_task timeout! Force deleting may be unsafe.");
-			// 如果超时，说明任务卡死了。此时不要直接删驱动。
-			// 极端情况下可能需要强制删除，但风险很大。
-			// 这里至少保证句柄置空，避免重复操作
-			s_poll_task = NULL;
-		}
-	}
-
-	// 此时可以安全地认为 uart_read_bytes 不会再被调用了
-	// 但为了保险，建议在这里删除驱动，而不是留给下一个模式去删
-	if (uart_is_driver_installed(FC_UART_PORT)) {
-		uart_driver_delete(FC_UART_PORT);
-		ESP_LOGI(TAG, "UART driver deleted in recorder_stop");
-	}
-
 	ESP_LOGI(TAG, "recorder stopped");
 }
 
 void recorder_toggle(void)
 {
 	if (s_recording) {
-		s_manual_stop = true;
-		s_recording = false;
+		recorder_stop();
+
 	} else {
-		if (s_record_task == NULL) {
-			s_recording = true;
-			xTaskCreate(record_task, "record", 8192, NULL, 5, &s_record_task);
-		}
+		recorder_start();
 	}
 }
