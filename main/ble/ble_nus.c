@@ -54,9 +54,6 @@ static ble_uuid128_t nus_writeCharacteristic_uuid = BLE_UUID128_INIT(0x9e, 0xca,
 static ble_uuid128_t airmic_svc_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
 							0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10);
 
-static ble_uuid128_t airmic_status_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
-							   0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x11);
-
 static ble_uuid128_t airmic_ctrl_uuid = BLE_UUID128_INIT(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
 							 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x12);
 
@@ -70,7 +67,6 @@ static const char *TAG = "AirMic_BLE";
 // --------------------------------------------------------------------------
 uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_nus_rx_handle = 0; // Notify handle（发给手机）
-static uint8_t g_armed = 0; // FC 解锁状态，外部写入
 static uint16_t g_airmic_resp_handle = 0;
 
 static void ble_start_advertising(void);
@@ -90,7 +86,10 @@ void ble_nus_send(const uint8_t *data, uint16_t len)
 		ESP_LOGW(TAG, "ble_nus_send: failed to create mbuf");
 		return;
 	}
-	ble_gatts_notify_custom(g_conn_handle, g_nus_rx_handle, om);
+	int rc = ble_gatts_notify_custom(g_conn_handle, g_nus_rx_handle, om);
+	if (rc != 0) {
+		ESP_LOGW(TAG, "notify failed: %d", rc); // rc=12 是 BLE_HS_ENOMEM，队列满
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -117,24 +116,8 @@ static int nus_tx_chr_access(uint16_t conn_handle, uint16_t attr_handle, struct 
 	return 0;
 }
 
-// --------------------------------------------------------------------------
-// AirMic Status Characteristic 回调（读取录音/解锁状态）
-// --------------------------------------------------------------------------
-static int airmic_status_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt,
-				void *arg)
-{
-	if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-		// 返回当前状态，格式随便定，这里先给个简单 JSON
-		char status[64];
-		snprintf(status, sizeof(status), "{\"armed\":%d,\"recording\":%d}", g_armed, g_armed);
-		os_mbuf_append(ctxt->om, status, strlen(status));
-	}
-	return 0;
-}
-
 static int dummy_access_cb(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-	ESP_LOGI(TAG, "dummy_access_cb: handle=%d", attr_handle);
 	return 0;
 }
 
@@ -257,6 +240,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 		if (event->connect.status == 0) {
 			g_conn_handle = event->connect.conn_handle;
 			ESP_LOGI(TAG, "BLE connected, handle=%d", g_conn_handle);
+
+			vTaskDelay(pdMS_TO_TICKS(200));
 			ble_bridge_request_fast_connection(g_conn_handle);
 		} else {
 			// status=26 时连接可能仍然有效，conn_handle 也是真实的
@@ -316,16 +301,13 @@ static void ble_start_advertising(void)
 	fields.uuids128 = &nus_svc_uuid;
 	fields.num_uuids128 = 1;
 	fields.uuids128_is_complete = 1;
-	fields.name = (uint8_t *)DEVICE_NAME;
-	fields.name_len = strlen(DEVICE_NAME);
-	fields.name_is_complete = 1;
 	ble_gap_adv_set_fields(&fields);
 
 	struct ble_hs_adv_fields rsp_fields = { 0 };
 	rsp_fields.name = (uint8_t *)DEVICE_NAME;
 	rsp_fields.name_len = strlen(DEVICE_NAME);
 	rsp_fields.name_is_complete = 1;
-	ble_gap_adv_rsp_set_fields(&rsp_fields); // ← scan response 单独设置
+	ble_gap_adv_rsp_set_fields(&rsp_fields);
 
 	struct ble_gap_adv_params adv_params = { 0 };
 	adv_params.conn_mode = BLE_GAP_CONN_MODE_UND; // 可连接
