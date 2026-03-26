@@ -71,8 +71,6 @@ static bool parse_armed(const uint8_t *buf, int len)
 // ── FC 轮询任务 ──────────────────────────────────────────────
 static void poll_task(void *arg)
 {
-	uint8_t rx_buf[512];
-
 	while (s_polling) {
 		if (l_conn_handle != g_conn_handle) {
 			ESP_LOGI(TAG, "conn_handle changed");
@@ -90,6 +88,7 @@ static void poll_task(void *arg)
 
 		// 轮询飞控是否已 arming
 		if (l_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+			uint8_t rx_buf[512];
 			uart_write_bytes(FC_UART_PORT, MSP_STATUS_REQ, sizeof(MSP_STATUS_REQ));
 			vTaskDelay(pdMS_TO_TICKS(20));
 			int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(20));
@@ -108,7 +107,8 @@ static void poll_task(void *arg)
 			}
 			vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
 		} else { // 蓝牙调参桥启动
-			int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(100));
+			uint8_t rx_buf[512];
+			int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(10));
 			if (len > 0) {
 				ble_nus_send(rx_buf, len);
 			}
