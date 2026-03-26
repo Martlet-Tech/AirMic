@@ -24,12 +24,6 @@ static void bridge_rx_task(void *arg)
 		int len = uart_read_bytes(FC_UART_PORT, buf, sizeof(buf), pdMS_TO_TICKS(20));
 
 		if (len > 0) {
-			/*ESP_LOGI(TAG, "FC → BLE %d bytes", len);
-			for (int i = 0; i < len; i++) {
-				printf("0x%02X ", buf[i]);
-			}
-			printf("\n");
-			fflush(stdout);*/
 			ble_nus_send(buf, len);
 		}
 	}
