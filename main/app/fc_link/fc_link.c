@@ -15,6 +15,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "rid.h"
 
 #define FC_UART_BAUD 115200
 #define POLL_INTERVAL_MS 100
@@ -28,6 +29,10 @@ const uint8_t MSP_STATUS_REQ[] = { '$', 'M', '<', 0x00, 0x65, 0x65 };
 
 // version cmd:  size=0, cmd=1, checksum=0x01
 const uint8_t MSP_API_VERSION_REQ[] = { '$', 'M', '<', 0x00, 0x01, 0x01 };
+
+static const uint8_t MSP_UID_REQ[] = { '$', 'M', '<', 0x00, 0xA0, 0xA0 };
+
+static bool s_uid_fetched = false;
 
 static TaskHandle_t s_poll_task = NULL;
 static bool s_armed = false;
@@ -100,8 +105,12 @@ static void poll_task(void *arg)
 
 					if (armed) {
 						recorder_start();
+						if (rid_get_enabled())
+							rid_start();
 					} else {
 						recorder_stop();
+						if (rid_get_enabled())
+							rid_stop();
 					}
 				}
 			}
@@ -122,6 +131,19 @@ void fc_link_start(void)
 {
 	uart_init();
 	vTaskDelay(pdMS_TO_TICKS(100));
+
+	uint8_t rx_buf[512];
+
+	if (!s_uid_fetched) {
+		uart_write_bytes(FC_UART_PORT, MSP_UID_REQ, sizeof(MSP_UID_REQ));
+		vTaskDelay(pdMS_TO_TICKS(50));
+		int len = uart_read_bytes(FC_UART_PORT, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(50));
+		if (len >= 17) { // $M> + size(1) + cmd(1) + payload(12) + crc(1)
+			rid_init(&rx_buf[5], 12);
+			s_uid_fetched = true;
+		}
+	}
+
 	xTaskCreate(poll_task, "fc_poll", 4096, NULL, 5, &s_poll_task);
 }
 
