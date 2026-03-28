@@ -219,6 +219,8 @@ void recorder_init(void)
 // ── 对外接口 ─────────────────────────────────────────────────
 void recorder_start(void)
 {
+	if (s_recording)
+		return;
 	// 1. 先开文件
 	int idx = sdcard_next_index();
 	char path[64];
