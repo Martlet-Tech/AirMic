@@ -12,7 +12,7 @@
 #include <string.h>
 #include "ble_nus.h"
 
-static const char *TAG = "recorder";
+#define TAG "recorder"
 
 // WAV 参数
 #define WAV_SAMPLE_RATE MIC_SAMPLE_RATE // 48000
@@ -24,6 +24,14 @@ static const char *TAG = "recorder";
 // 每次读取的帧数
 #define READ_BUF_FRAMES 512
 #define READ_BUF_BYTES (READ_BUF_FRAMES * WAV_CHANNELS * sizeof(int32_t))
+
+#define RING_BUF_BLOCKS 32 // 环形缓冲块数
+#define BLOCK_BYTES (READ_BUF_FRAMES * WAV_CHANNELS * sizeof(int16_t))
+
+static int16_t s_ring[RING_BUF_BLOCKS][READ_BUF_FRAMES * WAV_CHANNELS];
+static uint8_t s_ring_head = 0; // 生产者写
+static uint8_t s_ring_tail = 0; // 消费者读
+static SemaphoreHandle_t s_ring_sem = NULL; // 有数据通知消费者
 
 static TaskHandle_t s_record_task = NULL;
 static bool s_recording = false;
@@ -140,17 +148,105 @@ static void record_task(void *arg)
 	vTaskDelete(NULL);
 }
 
+// 生产者：只管读麦克风，高优先级
+static void mic_capture_task(void *arg)
+{
+	int32_t *raw = malloc(READ_BUF_BYTES);
+	while (s_recording) {
+		int bytes = mic_read(raw, READ_BUF_BYTES, 100);
+		if (bytes <= 0)
+			continue;
+
+		int samples = bytes / sizeof(int32_t);
+		uint8_t next = (s_ring_head + 1) % RING_BUF_BLOCKS;
+		if (next == s_ring_tail) {
+			ESP_LOGW(TAG, "ring full, drop"); // SD太慢导致
+			continue;
+		}
+		int16_t *dst = s_ring[s_ring_head];
+		for (int i = 0; i < samples; i++) {
+			dst[i] = (int16_t)(raw[i] >> 16);
+		}
+		s_ring_head = next;
+		xSemaphoreGive(s_ring_sem);
+	}
+	free(raw);
+	vTaskDelete(NULL);
+}
+
+// 消费者：只管写 SD 卡，低优先级
+static void sd_write_task(void *arg)
+{
+	FILE *f = (FILE *)arg;
+	uint32_t data_bytes = 0;
+	int64_t last_hdr_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+// 攒够 4 块再一次性写入，减少 SD 卡写操作次数
+#define WRITE_BATCH 4
+	static int16_t write_buf[WRITE_BATCH][READ_BUF_FRAMES * WAV_CHANNELS];
+
+	while (s_recording || s_ring_tail != s_ring_head) {
+		int batch = 0;
+
+		// 尽量攒满 WRITE_BATCH 块
+		while (batch < WRITE_BATCH && xSemaphoreTake(s_ring_sem, pdMS_TO_TICKS(50)) == pdTRUE) {
+			memcpy(write_buf[batch], s_ring[s_ring_tail], BLOCK_BYTES);
+			s_ring_tail = (s_ring_tail + 1) % RING_BUF_BLOCKS;
+			batch++;
+		}
+
+		if (batch > 0) {
+			fwrite(write_buf, 1, BLOCK_BYTES * batch, f);
+			data_bytes += BLOCK_BYTES * batch;
+		}
+
+		int64_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+		if (now - last_hdr_ms >= 1000) {
+			wav_header_update(f, data_bytes);
+			last_hdr_ms = now;
+		}
+	}
+
+	wav_header_update(f, data_bytes);
+	fclose(f);
+	vTaskDelete(NULL);
+}
+void recorder_init(void)
+{
+	s_ring_sem = xSemaphoreCreateCounting(RING_BUF_BLOCKS, 0);
+}
+
 // ── 对外接口 ─────────────────────────────────────────────────
 void recorder_start(void)
 {
-	led_set_mode(LED_MODE_RECORDING);
+	// 1. 先开文件
+	int idx = sdcard_next_index();
+	char path[64];
+	snprintf(path, sizeof(path), "%s/AM_%04d.wav", SD_MOUNT_POINT, idx);
 
-	if (s_recording || s_record_task != NULL)
+	FILE *f = fopen(path, "wb");
+	if (!f) {
+		ESP_LOGE(TAG, "cannot open %s", path);
 		return;
+	}
 
-	xTaskCreate(record_task, "record", 8192, NULL, 5, &s_record_task);
+	// 2. 写空头占位
+	wav_header_t h_empty = { 0 };
+	fwrite(&h_empty, sizeof(h_empty), 1, f);
+
+	// 3. 初始化环形缓冲
+	s_ring_head = 0;
+	s_ring_tail = 0;
+	s_ring_sem = xSemaphoreCreateCounting(RING_BUF_BLOCKS, 0);
+
 	s_recording = true;
-	ESP_LOGI(TAG, "recorder started");
+
+	// 4. f 在这里才能传进去
+	xTaskCreate(mic_capture_task, "mic_cap", 4096, NULL, 6, NULL);
+	xTaskCreate(sd_write_task, "sd_write", 4096, f, 4, NULL);
+
+	ESP_LOGI(TAG, "recording → %s", path);
+	led_set_mode(LED_MODE_RECORDING);
 }
 
 void recorder_stop(void)

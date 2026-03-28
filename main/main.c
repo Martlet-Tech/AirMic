@@ -36,6 +36,7 @@ void app_main(void)
 	mic_init(PIN_I2S_WS, PIN_I2S_CLK, PIN_I2S_SD);
 	sdcard_mount(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_D0, PIN_SDIO_D1, PIN_SDIO_D2, PIN_SDIO_D3);
 	button_init(PIN_KEY, on_button);
+	recorder_init();
 	ESP_LOGI(TAG, "hw init done");
 
 	// FC 初始化
