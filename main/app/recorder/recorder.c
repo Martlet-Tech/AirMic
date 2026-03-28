@@ -111,6 +111,11 @@ static void record_task(void *arg)
 	ESP_LOGI(TAG, "recording → %s", path);
 	led_set_mode(LED_MODE_RECORDING);
 
+	// --- 数字高通滤波器 (HPF) 状态 ---
+	static const float HPF_ALPHA = 0.9805f; 
+	float hpf_x[2] = {0, 0};
+	float hpf_y[2] = {0, 0};
+
 	while (s_recording) {
 		int bytes = mic_read(raw, READ_BUF_BYTES, 100);
 		if (bytes <= 0)
@@ -118,9 +123,19 @@ static void record_task(void *arg)
 
 		int samples = bytes / sizeof(int32_t);
 
-		// 32bit → 16bit，取高位
 		for (int i = 0; i < samples; i++) {
-			pcm[i] = (int16_t)(raw[i] >> 16);
+			int ch = i % 2; 
+			float x = (float)(raw[i] >> 16);
+			
+			float y = HPF_ALPHA * (hpf_y[ch] + x - hpf_x[ch]);
+			
+			hpf_x[ch] = x;
+			hpf_y[ch] = y;
+
+			if (y > 32767.0f) y = 32767.0f;
+			if (y < -32768.0f) y = -32768.0f;
+
+			pcm[i] = (int16_t)y;
 		}
 
 		size_t wb = samples * sizeof(int16_t);
@@ -152,6 +167,14 @@ static void record_task(void *arg)
 static void mic_capture_task(void *arg)
 {
 	int32_t *raw = malloc(READ_BUF_BYTES);
+	
+	// --- 数字高通滤波器 (HPF) 状态 ---
+	// 截至频率约 150Hz (fs = 48000Hz)
+	// 公式: y[n] = alpha * (y[n-1] + x[n] - x[n-1]), alpha ≈ 0.9805
+	static const float HPF_ALPHA = 0.9805f; 
+	float hpf_x[2] = {0, 0};
+	float hpf_y[2] = {0, 0};
+
 	while (s_recording) {
 		int bytes = mic_read(raw, READ_BUF_BYTES, 100);
 		if (bytes <= 0)
@@ -164,9 +187,25 @@ static void mic_capture_task(void *arg)
 			continue;
 		}
 		int16_t *dst = s_ring[s_ring_head];
+		
 		for (int i = 0; i < samples; i++) {
-			dst[i] = (int16_t)(raw[i] >> 16);
+			int ch = i % 2; // 交错的立体声：0=左，1=右
+			float x = (float)(raw[i] >> 16);
+			
+			// 应用一阶高通滤波
+			float y = HPF_ALPHA * (hpf_y[ch] + x - hpf_x[ch]);
+			
+			// 更新状态
+			hpf_x[ch] = x;
+			hpf_y[ch] = y;
+
+			// 防止浮点转整型的溢出爆音
+			if (y > 32767.0f) y = 32767.0f;
+			if (y < -32768.0f) y = -32768.0f;
+
+			dst[i] = (int16_t)y;
 		}
+		
 		s_ring_head = next;
 		xSemaphoreGive(s_ring_sem);
 	}
