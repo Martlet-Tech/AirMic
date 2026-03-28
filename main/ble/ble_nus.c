@@ -69,6 +69,9 @@ uint16_t g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_nus_rx_handle = 0; // Notify handle（发给手机）
 static uint16_t g_airmic_resp_handle = 0;
 
+// RID 模式标志：true 时 NUS 广播完全让位给 RID 广播
+static bool s_rid_mode = false;
+
 static void ble_start_advertising(void);
 
 // --------------------------------------------------------------------------
@@ -265,8 +268,10 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 	case BLE_GAP_EVENT_DISCONNECT:
 		ESP_LOGI(TAG, "BLE disconnected, reason=%d", event->disconnect.reason);
 		g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-		//g_nus_rx_handle = 0;
-		ble_start_advertising();
+		// RID 模式期间不恢复 NUS 广播，让 RID 独占信道
+		if (!s_rid_mode) {
+			ble_start_advertising();
+		}
 		break;
 
 	case BLE_GAP_EVENT_MTU:
@@ -385,4 +390,40 @@ void ble_nus_init(void)
 	nimble_port_freertos_init(nimble_host_task);
 
 	ESP_LOGI(TAG, "BLE NUS init done");
+}
+
+// --------------------------------------------------------------------------
+// RID 模式广播控制
+// 注意：必须在 NimBLE host task 上下文（callout / gap event）中调用，
+//       或通过 ble_npl_callout 转发，不可直接在普通 FreeRTOS task 中调用。
+// --------------------------------------------------------------------------
+void ble_nus_pause_advertising(void)
+{
+	if (s_rid_mode) {
+		return; // 已在 RID 模式，幂等
+	}
+	s_rid_mode = true;
+	ESP_LOGI(TAG, "NUS adv paused (RID mode ON)");
+
+	// 如果有已连接的 BF Configurator，先主动断开
+	if (g_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+		ble_gap_terminate(g_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+		// g_conn_handle 会在 DISCONNECT 事件里被清零
+	}
+
+	// 停止当前广播（不管是 NUS 还是其他）
+	ble_gap_adv_stop();
+}
+
+void ble_nus_resume_advertising(void)
+{
+	if (!s_rid_mode) {
+		return; // 已在 NUS 模式，幂等
+	}
+	s_rid_mode = false;
+	ESP_LOGI(TAG, "NUS adv resumed (RID mode OFF)");
+
+	// 停掉 RID 广播，重新启动 NUS 可连接广播
+	ble_gap_adv_stop();
+	ble_start_advertising();
 }

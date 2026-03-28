@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "nimble/nimble_port.h"
+#include "ble_nus.h"   // pause / resume NUS 广播
 
 static const char *TAG = "RID";
 static struct ble_npl_callout s_rid_callout;
@@ -112,26 +113,29 @@ static void build_system(uint8_t *msg)
 }
 
 // ── 构造单条报文的 BLE 广播数据 ──────────────────────────────
-// legacy BLE adv 数据最大 31 字节，结构：
-//   [3字节 flags AD] + [Service Data AD]
-// Service Data AD = 1(len) + 1(0x16) + 2(uuid) + 25(msg) = 29 字节
-// 总计 3 + 29 = 32 字节，超1字节
-// 去掉 flags 只放 Service Data：
-//   Service Data AD = 29 字节 ≤ 31 ✅
+// ASTM F3411-22a Section 6.3 Legacy BLE Advertising 格式：
+//
+//   NimBLE svc_data_uuid16 字段内容（NimBLE 会自动加 [len][0x16] 头）：
+//     [UUID_Lo=0xFA][UUID_Hi=0xFF][App Code=0x0D][25字节 ODID 报文]
+//     = 28 字节
+//
+//   NimBLE 最终输出 AD 结构：
+//     [len=29][type=0x16][28字节] = 30字节，≤ 31字节 Legacy 上限 ✅
+//
+// 注意：svc_data_uuid16 不能包含 [len][type] 字节，NimBLE 自动填充，
+//       否则会造成双重封包，导致 UUID 被识别为 0x161C 而非 0xFFFA。
 static void set_adv_data_for_msg(const uint8_t *msg)
 {
-	// AD structure: [len][type=0x16][uuid_lo][uuid_hi][data...]
-	uint8_t adv_data[4 + ODID_MSG_LEN];
-	adv_data[0] = 3 + ODID_MSG_LEN; // length = type(1) + uuid(2) + data(25)
-	adv_data[1] = 0x16; // AD type: Service Data - 16-bit UUID
-	adv_data[2] = ODID_SERVICE_UUID & 0xFF; // UUID low byte
-	adv_data[3] = (ODID_SERVICE_UUID >> 8); // UUID high byte
-	memcpy(&adv_data[4], msg, ODID_MSG_LEN); // 25字节报文
+	// svc_data_uuid16 = [UUID(2)] + [AppCode(1)] + [ODID报文(25)] = 28字节
+	uint8_t adv_data[2 + 1 + ODID_MSG_LEN];
+	adv_data[0] = ODID_SERVICE_UUID & 0xFF; // UUID low  byte: 0xFA
+	adv_data[1] = (ODID_SERVICE_UUID >> 8); // UUID high byte: 0xFF
+	adv_data[2] = 0x0D;                     // ASTM F3411 App Code（必须有，OpenDroneID 靠此识别）
+	memcpy(&adv_data[3], msg, ODID_MSG_LEN);
 
 	struct ble_hs_adv_fields fields = { 0 };
-	fields.svc_data_uuid16 = adv_data;
-	fields.svc_data_uuid16_len = sizeof(adv_data);
-	//fields.flags = BLE_HS_ADV_F_BREDR_UNSUP; // 不加 DISC_GEN 省1字节
+	fields.svc_data_uuid16     = adv_data;
+	fields.svc_data_uuid16_len = sizeof(adv_data); // 28字节
 
 	int rc = ble_gap_adv_set_fields(&fields);
 	if (rc != 0) {
@@ -143,7 +147,7 @@ static void start_nonconn_adv(void)
 {
 	struct ble_gap_adv_params params = { 0 };
 	params.conn_mode = BLE_GAP_CONN_MODE_NON; // non-connectable
-	params.disc_mode = BLE_GAP_DISC_MODE_NON;
+	params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 	// 广播间隔：300ms，三条报文轮一圈 = 900ms < 1s，满足 CAAC ≤1s 要求
 	params.itvl_min = 480; // 480 * 0.625ms = 300ms
 	params.itvl_max = 480;
@@ -215,6 +219,9 @@ void rid_start(void)
 		return;
 	s_running = true;
 
+	// 先暂停 NUS 广播，从此 BLE 信道独占给 RID
+	ble_nus_pause_advertising();
+
 	// 初始化 callout，绑定到 NimBLE 默认事件队列
 	ble_npl_callout_init(&s_rid_callout, nimble_port_get_dflt_eventq(), rid_callout_cb, NULL);
 
@@ -231,4 +238,7 @@ void rid_stop(void)
 	ble_npl_callout_stop(&s_rid_callout);
 	ble_gap_adv_stop();
 	ESP_LOGI(TAG, "RID stopped");
+
+	// RID 广播已停，把信道还给 NUS
+	ble_nus_resume_advertising();
 }
