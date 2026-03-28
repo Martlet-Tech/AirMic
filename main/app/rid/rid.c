@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "nimble/nimble_port.h"
-#include "ble_nus.h"   // pause / resume NUS 广播
+#include "ble_nus.h" // pause / resume NUS 广播
 
 static const char *TAG = "RID";
 static struct ble_npl_callout s_rid_callout;
@@ -56,37 +56,43 @@ static void build_location(uint8_t *msg)
 	memset(msg, 0, ODID_MSG_LEN);
 	msg[0] = (MSG_LOCATION << 4) | ODID_PROTO_VER;
 
-	// byte1: 运行状态 flags，0=正常运行
-	msg[1] = 0x00;
+	// byte1: bits[7:4]=OperationalStatus, bit[3]=Reserved, bit[2]=HeightType,
+	//        bit[1]=EWDirection, bit[0]=SpeedMultiplier
+	// OperationalStatus: 0=Undeclared, 1=Ground, 2=Airborne
+	// 无 GPS 时 Status=Ground(1)，让 App 知道飞机在地面
+	msg[1] = (1 << 4); // OperationalStatus = 1 (Ground)
 
-	// byte2: 航迹角，unknown=0
+	// byte2: 航迹角 0~179，EWDirection 区分东西半球
+	// 无 GPS 无航向，设为 0（App 显示 0°=正北，可接受）
 	msg[2] = 0;
 
-	// byte3: 地速，unknown=0xFF
-	msg[3] = 0xFF;
+	// byte3: 水平速度，0=静止
+	// 注：规范定义 0xFF=unknown，但 OpenDroneID App 会把它显示成 63.75 m/s
+	// 地面静止时填 0 更合理
+	msg[3] = 0;
 
-	// byte4: 垂直速度，unknown=0
+	// byte4: 垂直速度，0=静止（int8, 0.5m/s 步进）
 	msg[4] = 0;
 
-	// byte5~8: 纬度 int32 小端，unknown=0（赤道）
-	// byte9~12: 经度 int32 小端，unknown=0
+	// byte5~8: 纬度 int32 小端，无 GPS 填 0（显示为赤道，App 会标在非洲）
+	// byte9~12: 经度 int32 小端，无 GPS 填 0
 
-	// byte13~14: 气压高度，unknown=0xFFFF
+	// byte13~14: 气压高度，0xFFFF = unknown（App 显示 "—"）
 	msg[13] = 0xFF;
 	msg[14] = 0xFF;
 
-	// byte15~16: 几何高度，unknown=0xFFFF
+	// byte15~16: 几何高度，0xFFFF = unknown
 	msg[15] = 0xFF;
 	msg[16] = 0xFF;
 
-	// byte17~18: 距地高度，unknown=0xFFFF
+	// byte17~18: 距地高度，0xFFFF = unknown
 	msg[17] = 0xFF;
 	msg[18] = 0xFF;
 
-	// byte19: 精度，unknown=0
-	// byte20: 速度精度，unknown=0
-	// byte21~22: 时间戳，暂无 RTC 填0
-	// byte23: 时间戳精度，unknown=0
+	// byte19: 精度字段：bits[3:0]=水平精度，bits[7:4]=垂直精度，0=unknown
+	// byte20: bits[3:0]=气压精度，bits[7:4]=速度精度，0=unknown
+	// byte21~22: 时间戳（十分之一秒，模3600），暂无 RTC 填 0
+	// byte23: 时间戳精度，0=unknown
 	// byte24: 预留
 }
 
@@ -115,27 +121,29 @@ static void build_system(uint8_t *msg)
 // ── 构造单条报文的 BLE 广播数据 ──────────────────────────────
 // ASTM F3411-22a Section 6.3 Legacy BLE Advertising 格式：
 //
-//   NimBLE svc_data_uuid16 字段内容（NimBLE 会自动加 [len][0x16] 头）：
-//     [UUID_Lo=0xFA][UUID_Hi=0xFF][App Code=0x0D][25字节 ODID 报文]
-//     = 28 字节
+//   svc_data_uuid16 内容（NimBLE 自动加 [len][0x16] 头）：
+//     [UUID_Lo=0xFA][UUID_Hi=0xFF]          2字节
+//     [App Code=0x0D]                        1字节  ← ODID 识别码
+//     [Message Count=1]                      1字节  ← 必须！缺少此字节导致解析器
+//                                                      把 ODID 报头(0x01/0x11)误读
+//                                                      为消息数量，产生随机乱值
+//     [ODID 报文=25字节]                    25字节
+//     合计 = 29字节
 //
-//   NimBLE 最终输出 AD 结构：
-//     [len=29][type=0x16][28字节] = 30字节，≤ 31字节 Legacy 上限 ✅
-//
-// 注意：svc_data_uuid16 不能包含 [len][type] 字节，NimBLE 自动填充，
-//       否则会造成双重封包，导致 UUID 被识别为 0x161C 而非 0xFFFA。
+//   NimBLE 输出: [len=30][type=0x16][29字节] = 31字节 = Legacy 上限 ✅
 static void set_adv_data_for_msg(const uint8_t *msg)
 {
-	// svc_data_uuid16 = [UUID(2)] + [AppCode(1)] + [ODID报文(25)] = 28字节
-	uint8_t adv_data[2 + 1 + ODID_MSG_LEN];
+	// [UUID(2)] + [AppCode(1)] + [Count(1)] + [ODID报文(25)] = 29字节
+	uint8_t adv_data[2 + 1 + 1 + ODID_MSG_LEN];
 	adv_data[0] = ODID_SERVICE_UUID & 0xFF; // UUID low  byte: 0xFA
 	adv_data[1] = (ODID_SERVICE_UUID >> 8); // UUID high byte: 0xFF
-	adv_data[2] = 0x0D;                     // ASTM F3411 App Code（必须有，OpenDroneID 靠此识别）
-	memcpy(&adv_data[3], msg, ODID_MSG_LEN);
+	adv_data[2] = 0x0D; // ASTM F3411 App Code
+	adv_data[3] = 1; // Message Count = 1（每包1条报文）
+	memcpy(&adv_data[4], msg, ODID_MSG_LEN);
 
 	struct ble_hs_adv_fields fields = { 0 };
-	fields.svc_data_uuid16     = adv_data;
-	fields.svc_data_uuid16_len = sizeof(adv_data); // 28字节
+	fields.svc_data_uuid16 = adv_data;
+	fields.svc_data_uuid16_len = sizeof(adv_data); // 29字节
 
 	int rc = ble_gap_adv_set_fields(&fields);
 	if (rc != 0) {
