@@ -18,6 +18,7 @@
 #define CMD_SET_SAMPLERATE  0x02   // payload: uint32 采样率
 #define CMD_SET_CHANNELS    0x03   // payload: uint8  声道数
 #define CMD_GET_STATUS      0x04   // payload: 无，notify回系统状态
+#define CMD_SET_WIFI        0x05   // payload: ssid_len(1) + ssid + password_len(1) + password
 
 // ── 响应状态 ─────────────────────────────────────────────────
 #define RESP_OK   0x00

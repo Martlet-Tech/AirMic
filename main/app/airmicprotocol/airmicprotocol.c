@@ -1,10 +1,14 @@
 #include "airmicprotocol.h"
 #include "ble_nus.h"
 #include "esp_log.h"
+#include "wifi.h"
 #include <string.h>
 #include <sys/time.h>
 
 static const char *TAG = "airmic_proto";
+
+// 函数声明
+static void handle_set_wifi(const uint8_t *payload, uint8_t len);
 
 static uint16_t s_conn_handle = 0;
 static uint16_t s_resp_handle = 0;
@@ -89,6 +93,61 @@ static void handle_get_status(void)
 	send_resp(CMD_GET_STATUS, RESP_OK, payload, sizeof(payload));
 }
 
+static void handle_set_wifi(const uint8_t *payload, uint8_t len)
+{
+	if (len < 2) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	// 解析SSID
+	uint8_t ssid_len = payload[0];
+	if (ssid_len == 0 || ssid_len > 32) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (len < 1 + ssid_len + 1) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	char ssid[33] = {0};
+	memcpy(ssid, &payload[1], ssid_len);
+
+	// 解析密码
+	uint8_t password_len = payload[1 + ssid_len];
+	if (password_len > 64) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (len < 1 + ssid_len + 1 + password_len) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	char password[65] = {0};
+	memcpy(password, &payload[1 + ssid_len + 1], password_len);
+
+	ESP_LOGI(TAG, "WiFi setup: SSID=%s, Password=%s", ssid, password);
+
+	// 调用WiFi模块
+	wifi_init();
+	if (wifi_set_config(ssid, password) != 0) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (wifi_start() != 0) {
+		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	ESP_LOGI(TAG, "WiFi started, connecting to %s...", ssid);
+	send_resp(CMD_SET_WIFI, RESP_OK, NULL, 0);
+}
+
 // ── 对外接口 ─────────────────────────────────────────────────
 void airmic_protocol_init(uint16_t conn_handle, uint16_t resp_handle)
 {
@@ -123,6 +182,9 @@ void airmic_protocol_on_write(uint16_t conn_handle, const uint8_t *data, uint16_
 		break;
 	case CMD_GET_STATUS:
 		handle_get_status();
+		break;
+	case CMD_SET_WIFI:
+		handle_set_wifi(payload, pay_len);
 		break;
 	default:
 		ESP_LOGW(TAG, "unknown cmd: 0x%02X", cmd);
