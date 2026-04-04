@@ -2,13 +2,20 @@
 #include "ble_nus.h"
 #include "esp_log.h"
 #include "wifi.h"
+#include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static const char *TAG = "airmic_proto";
 
 // 函数声明
 static void handle_set_wifi(const uint8_t *payload, uint8_t len);
+static void handle_get_file_list(void);
+static void handle_delete_file(const uint8_t *payload, uint8_t len);
+static void handle_rename_file(const uint8_t *payload, uint8_t len);
 
 static uint16_t s_conn_handle = 0;
 static uint16_t s_resp_handle = 0;
@@ -16,7 +23,7 @@ static uint16_t s_resp_handle = 0;
 // ── 发送响应给手机 ────────────────────────────────────────────
 static void send_resp(uint8_t cmd, uint8_t status, const uint8_t *payload, uint8_t payload_len)
 {
-	uint8_t buf[64];
+	uint8_t buf[512]; // 增加缓冲区大小，与文件列表缓冲区一致
 	buf[0] = cmd;
 	buf[1] = status;
 	if (payload && payload_len > 0) {
@@ -148,6 +155,165 @@ static void handle_set_wifi(const uint8_t *payload, uint8_t len)
 	send_resp(CMD_SET_WIFI, RESP_OK, NULL, 0);
 }
 
+static void handle_get_file_list(void)
+{
+	// 打开SD卡目录
+	DIR *dir = opendir("/sdcard");
+	if (!dir) {
+		ESP_LOGE(TAG, "Failed to open SD card directory");
+		send_resp(CMD_GET_FILE_LIST, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	// 构建文件列表响应
+	// 格式: [文件数量(2字节)] + [文件名长度(1字节) + 文件名 + 文件大小(4字节)] * N
+	uint8_t buf[512]; // 限制响应大小
+	uint16_t offset = 0;
+	uint16_t file_count = 0;
+
+	// 预留文件数量的位置
+	offset += 2;
+
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL) {
+		// 跳过隐藏文件和目录
+		if (entry->d_name[0] == '.' || entry->d_type == DT_DIR) {
+			continue;
+		}
+
+		// 获取文件大小
+		struct stat stat_buf;
+		char path[265]; // 255字节文件名 + "/sdcard/"前缀(9字节) + 空终止符
+		snprintf(path, sizeof(path), "/sdcard/%s", entry->d_name);
+		if (stat(path, &stat_buf) != 0) {
+			continue;
+		}
+
+		// 检查缓冲区空间
+		uint8_t name_len = strlen(entry->d_name);
+		if (offset + 1 + name_len + 4 > sizeof(buf)) {
+			break; // 缓冲区不足
+		}
+
+		// 添加文件名长度
+		buf[offset++] = name_len;
+		// 添加文件名
+		memcpy(&buf[offset], entry->d_name, name_len);
+		offset += name_len;
+		// 添加文件大小（小端序）
+		buf[offset++] = (stat_buf.st_size >> 0) & 0xFF;
+		buf[offset++] = (stat_buf.st_size >> 8) & 0xFF;
+		buf[offset++] = (stat_buf.st_size >> 16) & 0xFF;
+		buf[offset++] = (stat_buf.st_size >> 24) & 0xFF;
+
+		file_count++;
+	}
+
+	closedir(dir);
+
+	// 写入文件数量（小端序）
+	buf[0] = (file_count >> 0) & 0xFF;
+	buf[1] = (file_count >> 8) & 0xFF;
+
+	ESP_LOGI(TAG, "File list: %d files", file_count);
+	send_resp(CMD_GET_FILE_LIST, RESP_OK, buf, offset);
+}
+
+static void handle_delete_file(const uint8_t *payload, uint8_t len)
+{
+	if (len < 1) {
+		send_resp(CMD_DELETE_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	// 解析文件名
+	uint8_t filename_len = payload[0];
+	if (filename_len == 0) {
+		send_resp(CMD_DELETE_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (len < 1 + filename_len) {
+		send_resp(CMD_DELETE_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	char filename[256] = {0};
+	memcpy(filename, &payload[1], filename_len);
+
+	// 构建完整路径
+	char path[265]; // 255字节文件名 + "/sdcard/"前缀(9字节) + 空终止符
+	snprintf(path, sizeof(path), "/sdcard/%s", filename);
+
+	ESP_LOGI(TAG, "Delete file: %s", path);
+
+	// 删除文件
+	if (unlink(path) != 0) {
+		ESP_LOGE(TAG, "Failed to delete file: %s", path);
+		send_resp(CMD_DELETE_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	ESP_LOGI(TAG, "File deleted successfully: %s", filename);
+	send_resp(CMD_DELETE_FILE, RESP_OK, NULL, 0);
+}
+
+static void handle_rename_file(const uint8_t *payload, uint8_t len)
+{
+	if (len < 2) {
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	// 解析旧文件名
+	uint8_t old_filename_len = payload[0];
+	if (old_filename_len == 0) {
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (len < 1 + old_filename_len + 1) {
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	char old_filename[256] = {0};
+	memcpy(old_filename, &payload[1], old_filename_len);
+
+	// 解析新文件名
+	uint8_t new_filename_len = payload[1 + old_filename_len];
+	if (new_filename_len == 0) {
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	if (len < 1 + old_filename_len + 1 + new_filename_len) {
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	char new_filename[256] = {0};
+	memcpy(new_filename, &payload[1 + old_filename_len + 1], new_filename_len);
+
+	// 构建完整路径
+	char old_path[265]; // 255字节文件名 + "/sdcard/"前缀(9字节) + 空终止符
+	char new_path[265];
+	snprintf(old_path, sizeof(old_path), "/sdcard/%s", old_filename);
+	snprintf(new_path, sizeof(new_path), "/sdcard/%s", new_filename);
+
+	ESP_LOGI(TAG, "Rename file: %s -> %s", old_path, new_path);
+
+	// 重命名文件
+	if (rename(old_path, new_path) != 0) {
+		ESP_LOGE(TAG, "Failed to rename file: %s -> %s", old_path, new_path);
+		send_resp(CMD_RENAME_FILE, RESP_ERR, NULL, 0);
+		return;
+	}
+
+	ESP_LOGI(TAG, "File renamed successfully: %s -> %s", old_filename, new_filename);
+	send_resp(CMD_RENAME_FILE, RESP_OK, NULL, 0);
+}
+
 // ── 对外接口 ─────────────────────────────────────────────────
 void airmic_protocol_init(uint16_t conn_handle, uint16_t resp_handle)
 {
@@ -185,6 +351,15 @@ void airmic_protocol_on_write(uint16_t conn_handle, const uint8_t *data, uint16_
 		break;
 	case CMD_SET_WIFI:
 		handle_set_wifi(payload, pay_len);
+		break;
+	case CMD_GET_FILE_LIST:
+		handle_get_file_list();
+		break;
+	case CMD_DELETE_FILE:
+		handle_delete_file(payload, pay_len);
+		break;
+	case CMD_RENAME_FILE:
+		handle_rename_file(payload, pay_len);
 		break;
 	default:
 		ESP_LOGW(TAG, "unknown cmd: 0x%02X", cmd);
