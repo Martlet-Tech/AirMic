@@ -327,45 +327,100 @@ static void handle_rename_file(const uint8_t *payload, uint8_t len)
 	send_resp(CMD_RENAME_FILE, RESP_OK, NULL, 0);
 }
 
+static void send_wifi_status_notification(void)
+{
+    if (s_conn_handle == 0 || s_resp_handle == 0) {
+        // No active BLE connection
+        ESP_LOGD(TAG, "No BLE connection, skipping WiFi status notification");
+        return;
+    }
+    
+    // 获取WiFi状态
+    int wifi_connected = wifi_get_status();
+    char ip_str[16] = {0};
+    bool got_ip = wifi_get_ip(ip_str);
+
+    // 构建响应
+    // 格式: [status(1字节)] + [ip_len(1字节)] + [ip地址]
+    // 状态值: 0=未连接, 1=已连接但无IP, 2=已连接且有IP
+    uint8_t payload[1 + 1 + 15]; // 最大IP地址长度为15字节
+    uint8_t offset = 0;
+
+    // Determine actual status based on both connection and IP availability
+    uint8_t status;
+    if (wifi_connected == 0) {
+        status = 0; // Not connected
+    } else if (got_ip) {
+        status = 2; // Connected with IP
+    } else {
+        status = 1; // Connected but no IP
+    }
+
+    // 添加状态
+    payload[offset++] = status;
+
+    // 添加IP地址长度和内容（只有状态为2时才有IP）
+    if (status == 2) {
+        uint8_t ip_len = strlen(ip_str);
+        payload[offset++] = ip_len;
+        memcpy(&payload[offset], ip_str, ip_len);
+        offset += ip_len;
+    } else {
+        // No IP, send length 0
+        payload[offset++] = 0;
+    }
+
+    ESP_LOGI(TAG, "Sending WiFi status notification: %d, IP: %s", status, status == 2 ? ip_str : "N/A");
+    
+    // Send as unsolicited notification (not in response to a command)
+    uint8_t buf[2 + 15];
+    buf[0] = CMD_GET_WIFI_STATUS;
+    buf[1] = RESP_OK;
+    memcpy(&buf[2], payload, offset);
+    ble_airmic_notify(s_conn_handle, s_resp_handle, buf, 2 + offset);
+    
+    ESP_LOGD(TAG, "WiFi status notification sent successfully");
+}
+
 static void handle_get_wifi_status(void)
 {
-	// 获取WiFi状态
-	int wifi_connected = wifi_get_status();
-	char ip_str[16] = {0};
-	bool got_ip = wifi_get_ip(ip_str);
+    // 获取WiFi状态
+    int wifi_connected = wifi_get_status();
+    char ip_str[16] = {0};
+    bool got_ip = wifi_get_ip(ip_str);
 
-	// 构建响应
-	// 格式: [status(1字节)] + [ip_len(1字节)] + [ip地址]
-	// 状态值: 0=未连接, 1=已连接但无IP, 2=已连接且有IP
-	uint8_t payload[1 + 1 + 15]; // 最大IP地址长度为15字节
-	uint8_t offset = 0;
+    // 构建响应
+    // 格式: [status(1字节)] + [ip_len(1字节)] + [ip地址]
+    // 状态值: 0=未连接, 1=已连接但无IP, 2=已连接且有IP
+    uint8_t payload[1 + 1 + 15]; // 最大IP地址长度为15字节
+    uint8_t offset = 0;
 
-	// Determine actual status based on both connection and IP availability
-	uint8_t status;
-	if (wifi_connected == 0) {
-		status = 0; // Not connected
-	} else if (got_ip) {
-		status = 2; // Connected with IP
-	} else {
-		status = 1; // Connected but no IP
-	}
+    // Determine actual status based on both connection and IP availability
+    uint8_t status;
+    if (wifi_connected == 0) {
+        status = 0; // Not connected
+    } else if (got_ip) {
+        status = 2; // Connected with IP
+    } else {
+        status = 1; // Connected but no IP
+    }
 
-	// 添加状态
-	payload[offset++] = status;
+    // 添加状态
+    payload[offset++] = status;
 
-	// 添加IP地址长度和内容（只有状态为2时才有IP）
-	if (status == 2) {
-		uint8_t ip_len = strlen(ip_str);
-		payload[offset++] = ip_len;
-		memcpy(&payload[offset], ip_str, ip_len);
-		offset += ip_len;
-	} else {
-		// No IP, send length 0
-		payload[offset++] = 0;
-	}
+    // 添加IP地址长度和内容（只有状态为2时才有IP）
+    if (status == 2) {
+        uint8_t ip_len = strlen(ip_str);
+        payload[offset++] = ip_len;
+        memcpy(&payload[offset], ip_str, ip_len);
+        offset += ip_len;
+    } else {
+        // No IP, send length 0
+        payload[offset++] = 0;
+    }
 
-	ESP_LOGI(TAG, "WiFi status: %d, IP: %s", status, status == 2 ? ip_str : "N/A");
-	send_resp(CMD_GET_WIFI_STATUS, RESP_OK, payload, offset);
+    ESP_LOGI(TAG, "WiFi status: %d, IP: %s", status, status == 2 ? ip_str : "N/A");
+    send_resp(CMD_GET_WIFI_STATUS, RESP_OK, payload, offset);
 }
 
 // ── 对外接口 ─────────────────────────────────────────────────
@@ -373,6 +428,20 @@ void airmic_protocol_init(uint16_t conn_handle, uint16_t resp_handle)
 {
 	s_conn_handle = conn_handle;
 	s_resp_handle = resp_handle;
+	
+	// Register WiFi status change callback for automatic notifications
+	wifi_set_status_callback(send_wifi_status_notification);
+	
+	// Send current WiFi status immediately upon BLE connection
+	send_wifi_status_notification();
+}
+
+void airmic_protocol_disconnect(void)
+{
+	// Unregister WiFi callback and clear connection state
+	wifi_set_status_callback(NULL);
+	s_conn_handle = 0;
+	s_resp_handle = 0;
 }
 
 void airmic_protocol_on_write(uint16_t conn_handle, const uint8_t *data, uint16_t len)

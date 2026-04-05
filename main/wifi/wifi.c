@@ -11,6 +11,7 @@ static char s_ssid[33] = {0};
 static char s_password[65] = {0};
 static int s_connected = 0;
 static char s_ip_address[16] = {0}; // Store IP address when obtained
+static wifi_status_callback_t s_status_callback = NULL; // Callback function
 
 static void print_wifi_status(void)
 {
@@ -43,11 +44,19 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         s_ip_address[0] = '\0';
         ESP_LOGI(TAG, "WiFi disconnected, retrying...");
         esp_wifi_connect();
+        // Trigger callback for status change
+        if (s_status_callback) {
+            s_status_callback();
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_connected = 1;
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         snprintf(s_ip_address, sizeof(s_ip_address), IPSTR, IP2STR(&event->ip_info.ip));
         ESP_LOGI(TAG, "WiFi connected, IP address: %s", s_ip_address);
+        // Trigger callback for status change
+        if (s_status_callback) {
+            s_status_callback();
+        }
     }
 }
 
@@ -220,4 +229,9 @@ bool wifi_is_connected_to_ssid(const char *ssid)
     }
     
     return false;
+}
+
+void wifi_set_status_callback(wifi_status_callback_t callback)
+{
+    s_status_callback = callback;
 }

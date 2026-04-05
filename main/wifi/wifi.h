@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// WiFi status change callback type
+typedef void (*wifi_status_callback_t)(void);
+
 /**
  * WiFi 模块初始化
  */
@@ -46,3 +49,9 @@ bool wifi_get_ip(char *ip_str);
  * @return true 如果已连接到指定SSID，false 否则
  */
 bool wifi_is_connected_to_ssid(const char *ssid);
+
+/**
+ * 设置WiFi状态变化回调函数
+ * @param callback 回调函数，当WiFi连接状态或IP地址发生变化时调用
+ */
+void wifi_set_status_callback(wifi_status_callback_t callback);
