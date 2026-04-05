@@ -20,6 +20,7 @@ static wifi_status_callback_t s_status_callback = NULL; // Callback function
 // HTTP 服务器相关变量
 #define FILE_PATH_MAX 265
 #define SCRATCH_BUFSIZE 1024
+#define MAX_CHUNK_SIZE 655360 // 最大分块大小 64KB
 
 struct file_server_data {
     char base_path[FILE_PATH_MAX];
@@ -46,12 +47,9 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     struct stat file_stat;
     long start = 0, end = 0;
 
-    ESP_LOGI(TAG, "Received download request: %s", req->uri);
-
     // 解析 URL 参数，获取文件名和范围
     char *filename = strchr(req->uri, '?');
     if (!filename) {
-        ESP_LOGE(TAG, "Missing filename in request");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
         return ESP_FAIL;
     }
@@ -67,17 +65,14 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
         char *end_param = strstr(param_start + 1, "end=");
         if (start_param) {
             start = strtol(start_param + 6, NULL, 10);
-            ESP_LOGI(TAG, "Parsed start parameter: %ld", start);
         }
         if (end_param) {
             end = strtol(end_param + 4, NULL, 10);
-            ESP_LOGI(TAG, "Parsed end parameter: %ld", end);
         }
     }
 
     // 构建完整路径
     snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
-    ESP_LOGI(TAG, "File path: %s", filepath);
 
     if (stat(filepath, &file_stat) == -1) {
         ESP_LOGE(TAG, "Failed to stat file: %s", filepath);
@@ -85,19 +80,10 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "File size: %ld bytes", file_stat.st_size);
-
     // 验证范围参数
-    if (start < 0) {
-        start = 0;
-        ESP_LOGW(TAG, "Start parameter < 0, setting to 0");
-    }
-    if (end <= 0 || end > file_stat.st_size) {
-        end = file_stat.st_size;
-        ESP_LOGW(TAG, "End parameter invalid, setting to file size: %ld", end);
-    }
+    if (start < 0) start = 0;
+    if (end <= 0 || end > file_stat.st_size) end = file_stat.st_size;
     if (start >= end) {
-        ESP_LOGE(TAG, "Invalid range: start=%ld >= end=%ld", start, end);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid range");
         return ESP_FAIL;
     }
@@ -116,7 +102,6 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to seek file");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Seek to position: %ld", start);
 
     // 计算要发送的字节数
     long send_size = end - start;
@@ -125,40 +110,40 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
 
     // 添加 CORS 头
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, Authorization");
     // 添加 Content-Length 头
     char content_length[32];
     sprintf(content_length, "%ld", send_size);
     httpd_resp_set_hdr(req, "Content-Length", content_length);
-    ESP_LOGI(TAG, "Set Content-Length: %s", content_length);
     // 添加 Content-Range 头
     char content_range[64];
     sprintf(content_range, "bytes %ld-%ld/%ld", start, end - 1, file_stat.st_size);
     httpd_resp_set_hdr(req, "Content-Range", content_range);
-    ESP_LOGI(TAG, "Set Content-Range: %s", content_range);
     // 设置响应状态码为 206 Partial Content
     httpd_resp_set_status(req, "206 Partial Content");
-    ESP_LOGI(TAG, "Set status code: 206 Partial Content");
 
     // 分配缓冲区来存储要发送的数据
-    char *buffer = (char *)malloc(send_size);
+    char *buffer = NULL;
+    // 检查是否启用了 PSRAM
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > send_size) {
+        // 使用 PSRAM 分配缓冲区
+        buffer = (char *)heap_caps_malloc(send_size, MALLOC_CAP_SPIRAM);
+    }
+    // 如果 PSRAM 分配失败，尝试使用普通 RAM
+    if (!buffer) {
+        buffer = (char *)malloc(send_size);
+    }
     if (!buffer) {
         fclose(fd);
-        ESP_LOGE(TAG, "Failed to allocate buffer for file data");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
         return ESP_FAIL;
     }
 
     // 一次性读取所有数据
     size_t bytes_read = fread(buffer, 1, send_size, fd);
-    ESP_LOGI(TAG, "Read %zu bytes from file", bytes_read);
-
     fclose(fd);
 
     if (bytes_read != send_size) {
         free(buffer);
-        ESP_LOGE(TAG, "Failed to read file: expected %ld bytes, got %zu bytes", send_size, bytes_read);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read file");
         return ESP_FAIL;
     }
@@ -166,7 +151,12 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     // 一次性发送所有数据
     ESP_LOGI(TAG, "Sending file data: %ld bytes", send_size);
     int send_result = httpd_resp_send(req, buffer, send_size);
-    free(buffer);
+    // 释放缓冲区
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0) {
+        heap_caps_free(buffer);
+    } else {
+        free(buffer);
+    }
 
     if (send_result != ESP_OK) {
         ESP_LOGE(TAG, "File sending failed: %d", send_result);
@@ -226,38 +216,50 @@ static esp_err_t play_get_handler(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Content-Length", content_length);
 
     // 分配缓冲区来存储要发送的数据
-    char *buffer = (char *)malloc(file_stat.st_size);
+    char *buffer = NULL;
+    // 检查是否启用了 PSRAM
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > file_stat.st_size) {
+        // 使用 PSRAM 分配缓冲区
+        buffer = (char *)heap_caps_malloc(file_stat.st_size, MALLOC_CAP_SPIRAM);
+    }
+    // 如果 PSRAM 分配失败，尝试使用普通 RAM
+    if (!buffer) {
+        buffer = (char *)malloc(file_stat.st_size);
+    }
     if (!buffer) {
         fclose(fd);
-        ESP_LOGE(TAG, "Failed to allocate buffer for file data");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
         return ESP_FAIL;
     }
 
     // 一次性读取所有数据
     size_t bytes_read = fread(buffer, 1, file_stat.st_size, fd);
-    ESP_LOGI(TAG, "Read %zu bytes from file", bytes_read);
-
     fclose(fd);
 
     if (bytes_read != file_stat.st_size) {
-        free(buffer);
-        ESP_LOGE(TAG, "Failed to read file: expected %ld bytes, got %zu bytes", file_stat.st_size, bytes_read);
+        // 释放缓冲区
+        if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0) {
+            heap_caps_free(buffer);
+        } else {
+            free(buffer);
+        }
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read file");
         return ESP_FAIL;
     }
 
     // 一次性发送所有数据
-    ESP_LOGI(TAG, "Sending file data: %ld bytes", file_stat.st_size);
     int send_result = httpd_resp_send(req, buffer, file_stat.st_size);
-    free(buffer);
+    // 释放缓冲区
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 0) {
+        heap_caps_free(buffer);
+    } else {
+        free(buffer);
+    }
 
     if (send_result != ESP_OK) {
-        ESP_LOGE(TAG, "File sending failed: %d", send_result);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "File sending complete, sent %ld bytes", file_stat.st_size);
     return ESP_OK;
 }
 
