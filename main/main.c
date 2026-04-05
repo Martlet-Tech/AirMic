@@ -7,6 +7,7 @@
 #include "sdcard.h"
 #include "fc_link.h"
 #include "mic.h"
+#include "wifi/wifi.h"
 
 static const char *TAG = "main";
 

@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
-
+#include "esp_err.h"
 // WiFi status change callback type
 typedef void (*wifi_status_callback_t)(void);
 
@@ -55,3 +55,15 @@ bool wifi_is_connected_to_ssid(const char *ssid);
  * @param callback 回调函数，当WiFi连接状态或IP地址发生变化时调用
  */
 void wifi_set_status_callback(wifi_status_callback_t callback);
+
+/**
+ * 启动 HTTP 服务器
+ * @return 0 成功，其他失败
+ */
+esp_err_t wifi_start_http_server(void);
+
+/**
+ * 停止 HTTP 服务器
+ * @return 0 成功，其他失败
+ */
+esp_err_t wifi_stop_http_server(void);
