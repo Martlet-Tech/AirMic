@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 /**
  * WiFi 模块初始化
@@ -31,3 +32,17 @@ int wifi_stop(void);
  * @return 0 未连接，1 已连接
  */
 int wifi_get_status(void);
+
+/**
+ * 获取 WiFi IP 地址
+ * @param ip_str 输出参数，用于存储IP地址字符串（至少16字节）
+ * @return true 如果已获取IP地址，false 否则
+ */
+bool wifi_get_ip(char *ip_str);
+
+/**
+ * 检查是否已连接到指定的SSID
+ * @param ssid 要检查的SSID
+ * @return true 如果已连接到指定SSID，false 否则
+ */
+bool wifi_is_connected_to_ssid(const char *ssid);

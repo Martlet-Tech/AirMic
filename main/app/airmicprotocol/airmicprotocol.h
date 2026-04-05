@@ -22,6 +22,7 @@
 #define CMD_GET_FILE_LIST   0x06   // payload: 无，notify回文件列表
 #define CMD_DELETE_FILE     0x07   // payload: filename_len(1) + filename
 #define CMD_RENAME_FILE     0x08   // payload: old_filename_len(1) + old_filename + new_filename_len(1) + new_filename
+#define CMD_GET_WIFI_STATUS 0x09   // payload: 无，notify回WiFi状态和IP地址
 
 // ── 响应状态 ─────────────────────────────────────────────────
 #define RESP_OK   0x00

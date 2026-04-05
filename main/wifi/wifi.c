@@ -10,6 +10,7 @@ static const char *TAG = "AirMic_WiFi";
 static char s_ssid[33] = {0};
 static char s_password[65] = {0};
 static int s_connected = 0;
+static char s_ip_address[16] = {0}; // Store IP address when obtained
 
 static void print_wifi_status(void)
 {
@@ -39,12 +40,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = 0;
+        s_ip_address[0] = '\0';
         ESP_LOGI(TAG, "WiFi disconnected, retrying...");
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_connected = 1;
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "WiFi connected, IP address: " IPSTR, IP2STR(&event->ip_info.ip));
+        snprintf(s_ip_address, sizeof(s_ip_address), IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "WiFi connected, IP address: %s", s_ip_address);
     }
 }
 
@@ -117,8 +120,23 @@ int wifi_set_config(const char *ssid, const char *password)
     strncpy((char *)wifi_config.sta.ssid, s_ssid, sizeof(wifi_config.sta.ssid));
     strncpy((char *)wifi_config.sta.password, s_password, sizeof(wifi_config.sta.password));
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi mode: %s", esp_err_to_name(err));
+        return -1;
+    }
+    
+    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (err != ESP_OK) {
+        // Handle specific error cases gracefully
+        if (err == ESP_ERR_WIFI_STATE) {
+            ESP_LOGW(TAG, "WiFi is in connecting state, cannot set config. This is normal if already connecting.");
+            // Return success since we're already trying to connect
+            return 0;
+        }
+        ESP_LOGE(TAG, "Failed to set WiFi config: %s", esp_err_to_name(err));
+        return -1;
+    }
 
     ESP_LOGI(TAG, "WiFi config set: SSID=%s", s_ssid);
     return 0;
@@ -160,4 +178,46 @@ int wifi_get_status(void)
         }
     }
     return 0; // 未连接
+}
+
+bool wifi_get_ip(char *ip_str)
+{
+    if (!ip_str) {
+        return false;
+    }
+    
+    // Clear the output buffer first
+    ip_str[0] = '\0';
+    
+    // If we have a stored IP address and are connected, return it
+    if (s_connected && s_ip_address[0] != '\0') {
+        strncpy(ip_str, s_ip_address, 15);
+        ip_str[15] = '\0'; // Ensure null termination
+        return true;
+    }
+    
+    return false;
+}
+
+bool wifi_is_connected_to_ssid(const char *ssid)
+{
+    if (!ssid || !s_ssid[0]) {
+        return false;
+    }
+    
+    // Check if we have stored the same SSID and are connected
+    if (s_connected && strcmp(s_ssid, ssid) == 0) {
+        return true;
+    }
+    
+    // Fallback: query current connection if needed
+    wifi_ap_record_t ap_info;
+    esp_err_t ret = esp_wifi_sta_get_ap_info(&ap_info);
+    if (ret == ESP_OK && ap_info.ssid[0] != 0) {
+        if (strcmp((char*)ap_info.ssid, ssid) == 0) {
+            return true;
+        }
+    }
+    
+    return false;
 }

@@ -16,6 +16,7 @@ static void handle_set_wifi(const uint8_t *payload, uint8_t len);
 static void handle_get_file_list(void);
 static void handle_delete_file(const uint8_t *payload, uint8_t len);
 static void handle_rename_file(const uint8_t *payload, uint8_t len);
+static void handle_get_wifi_status(void);
 
 static uint16_t s_conn_handle = 0;
 static uint16_t s_resp_handle = 0;
@@ -139,8 +140,20 @@ static void handle_set_wifi(const uint8_t *payload, uint8_t len)
 
 	ESP_LOGI(TAG, "WiFi setup: SSID=%s, Password=%s", ssid, password);
 
-	// 调用WiFi模块
+	// 检查当前WiFi状态 - 遵循项目规范：如果已连接并获取IP，直接返回成功
+	char current_ip[16] = {0};
+	bool already_has_ip = wifi_get_ip(current_ip);
+	
+	if (already_has_ip && wifi_is_connected_to_ssid(ssid)) {
+		// 已经连接到相同的网络且有IP，直接返回成功
+		ESP_LOGI(TAG, "Already connected to %s with IP: %s", ssid, current_ip);
+		send_resp(CMD_SET_WIFI, RESP_OK, NULL, 0);
+		return;
+	}
+
+	// 调用WiFi模块初始化（如果未初始化）
 	wifi_init();
+
 	if (wifi_set_config(ssid, password) != 0) {
 		send_resp(CMD_SET_WIFI, RESP_ERR, NULL, 0);
 		return;
@@ -314,6 +327,47 @@ static void handle_rename_file(const uint8_t *payload, uint8_t len)
 	send_resp(CMD_RENAME_FILE, RESP_OK, NULL, 0);
 }
 
+static void handle_get_wifi_status(void)
+{
+	// 获取WiFi状态
+	int wifi_connected = wifi_get_status();
+	char ip_str[16] = {0};
+	bool got_ip = wifi_get_ip(ip_str);
+
+	// 构建响应
+	// 格式: [status(1字节)] + [ip_len(1字节)] + [ip地址]
+	// 状态值: 0=未连接, 1=已连接但无IP, 2=已连接且有IP
+	uint8_t payload[1 + 1 + 15]; // 最大IP地址长度为15字节
+	uint8_t offset = 0;
+
+	// Determine actual status based on both connection and IP availability
+	uint8_t status;
+	if (wifi_connected == 0) {
+		status = 0; // Not connected
+	} else if (got_ip) {
+		status = 2; // Connected with IP
+	} else {
+		status = 1; // Connected but no IP
+	}
+
+	// 添加状态
+	payload[offset++] = status;
+
+	// 添加IP地址长度和内容（只有状态为2时才有IP）
+	if (status == 2) {
+		uint8_t ip_len = strlen(ip_str);
+		payload[offset++] = ip_len;
+		memcpy(&payload[offset], ip_str, ip_len);
+		offset += ip_len;
+	} else {
+		// No IP, send length 0
+		payload[offset++] = 0;
+	}
+
+	ESP_LOGI(TAG, "WiFi status: %d, IP: %s", status, status == 2 ? ip_str : "N/A");
+	send_resp(CMD_GET_WIFI_STATUS, RESP_OK, payload, offset);
+}
+
 // ── 对外接口 ─────────────────────────────────────────────────
 void airmic_protocol_init(uint16_t conn_handle, uint16_t resp_handle)
 {
@@ -360,6 +414,9 @@ void airmic_protocol_on_write(uint16_t conn_handle, const uint8_t *data, uint16_
 		break;
 	case CMD_RENAME_FILE:
 		handle_rename_file(payload, pay_len);
+		break;
+	case CMD_GET_WIFI_STATUS:
+		handle_get_wifi_status();
 		break;
 	default:
 		ESP_LOGW(TAG, "unknown cmd: 0x%02X", cmd);
