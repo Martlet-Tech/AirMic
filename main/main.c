@@ -8,8 +8,16 @@
 #include "fc_link.h"
 #include "mic.h"
 #include "wifi/wifi.h"
+#include "usb_msc.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "main";
+
+#define NVS_NAMESPACE "airmic"
+#define NVS_KEY_BOOT "boot_mode"
+#define BOOT_MODE_NORMAL 0
+#define BOOT_MODE_USB_MSC 1
+#define BOOT_MODE_OTA 2 // 预留
 
 static void on_button(btn_event_t event)
 {
@@ -31,6 +39,23 @@ static void on_button(btn_event_t event)
 void app_main(void)
 {
 	ESP_LOGI(TAG, "AirMic starting...");
+
+	ESP_ERROR_CHECK(nvs_flash_init());
+
+	uint8_t boot_mode = BOOT_MODE_NORMAL;
+	nvs_handle_t h;
+	if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+		nvs_get_u8(h, NVS_KEY_BOOT, &boot_mode);
+		nvs_set_u8(h, NVS_KEY_BOOT, BOOT_MODE_NORMAL); // 清掉
+		nvs_commit(h);
+		nvs_close(h);
+	}
+
+	if (boot_mode == BOOT_MODE_USB_MSC) {
+		ESP_LOGI(TAG, "Boot mode: USB MSC");
+		usb_msc_start(); // 不返回
+		return;
+	}
 
 	// 驱动层初始化（传入 bsp 引脚，与硬件解耦）
 	led_init(PIN_LED_MONO);
