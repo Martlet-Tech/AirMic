@@ -24,6 +24,7 @@
 #include "driver/gpio.h"
 #include "bsp.h"
 #include "airmicprotocol.h"
+#include "rgb_led.h"
 
 // --------------------------------------------------------------------------
 // 设备名，将来改这一行就够了
@@ -244,6 +245,9 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 			g_conn_handle = event->connect.conn_handle;
 			ESP_LOGI(TAG, "BLE connected, handle=%d", g_conn_handle);
 
+			// 启动RGB LED呼吸变色效果
+			rgb_led_set_mode(RGB_LED_MODE_BREATHING);
+
 			vTaskDelay(pdMS_TO_TICKS(200));
 			ble_bridge_request_fast_connection(g_conn_handle);
 		} else {
@@ -252,10 +256,12 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 				g_conn_handle = event->connect.conn_handle; // ← 关键
 				ESP_LOGW(TAG, "connect param negotiation failed(%d), but using handle=%d",
 					 event->connect.status, g_conn_handle);
+				// 启动RGB LED呼吸变色效果
+				rgb_led_set_mode(RGB_LED_MODE_BREATHING);
 			} else {
 				ESP_LOGW(TAG, "connect truly failed, status=%d, restarting adv", event->connect.status);
 				ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, NULL, gap_event_handler,
-						  NULL);
+					  NULL);
 			}
 		}
 		break;
@@ -268,6 +274,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 	case BLE_GAP_EVENT_DISCONNECT:
 		ESP_LOGI(TAG, "BLE disconnected, reason=%d", event->disconnect.reason);
 		g_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+		// 关闭RGB LED
+		rgb_led_set_mode(RGB_LED_MODE_OFF);
 		// RID 模式期间不恢复 NUS 广播，让 RID 独占信道
 		if (!s_rid_mode) {
 			ble_start_advertising();
@@ -386,6 +394,11 @@ void ble_nus_init(void)
 	ble_hs_cfg.sync_cb = ble_on_sync;
 
 	ble_svc_gap_device_name_set(DEVICE_NAME);
+
+	// 初始化RGB LED（IO40引脚）
+	rgb_led_init(GPIO_NUM_40);
+	// 初始状态为关闭
+	rgb_led_set_mode(RGB_LED_MODE_OFF);
 
 	nimble_port_freertos_init(nimble_host_task);
 

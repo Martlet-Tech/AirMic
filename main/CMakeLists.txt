@@ -15,7 +15,6 @@ idf_component_register(
         PRIV_REQUIRES spi_flash
 	REQUIRES bt nvs_flash driver fatfs sdmmc esp_wifi esp_netif esp_event esp_http_server tinyusb
 	INCLUDE_DIRS "" "boards" "ble" "wifi" "app" "app/airmicprotocol" "app/fc_link" "app/recorder"  "app/rid"  
-		"app/usb_msc" 
-		"app/http_server"
-		"drivers" "drivers/led" "drivers/button" "drivers/mic" "drivers/sdcard"
+		"app/usb_msc" "app/http_server" 
+		"drivers" "drivers/led" "drivers/button" "drivers/mic" "drivers/sdcard" "drivers/rgb_led"
 )
