@@ -17,7 +17,7 @@ bool sdcard_mount(gpio_num_t clk, gpio_num_t cmd,
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
         .format_if_mount_failed = false,
         .max_files              = 5,
-        .allocation_unit_size   = 16 * 1024,
+        .allocation_unit_size   = 64 * 1024,
     };
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();

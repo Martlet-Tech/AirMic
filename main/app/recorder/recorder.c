@@ -33,7 +33,7 @@ static uint8_t s_ring_head = 0; // 生产者写
 static uint8_t s_ring_tail = 0; // 消费者读
 static SemaphoreHandle_t s_ring_sem = NULL; // 有数据通知消费者
 
-static TaskHandle_t s_record_task = NULL;
+//static TaskHandle_t s_record_task = NULL;
 static bool s_recording = false;
 
 // ── WAV 头结构 ────────────────────────────────────────────────
@@ -76,6 +76,8 @@ static void wav_header_update(FILE *f, uint32_t data_bytes)
 	fseek(f, 0, SEEK_END);
 }
 
+
+#if 0
 // ── 录音任务 ─────────────────────────────────────────────────
 static void record_task(void *arg)
 {
@@ -162,6 +164,7 @@ static void record_task(void *arg)
 	s_record_task = NULL;
 	vTaskDelete(NULL);
 }
+#endif
 
 // 生产者：只管读麦克风，高优先级
 static void mic_capture_task(void *arg)

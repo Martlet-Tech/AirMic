@@ -8,7 +8,7 @@
 #define DOUBLE_GAP_MS 300 // 两次单击间隔小于此值判定为双击
 #define LONG_PRESS_MS 1000
 
-static const char *TAG = "button";
+#define TAG "button"
 static gpio_num_t s_pin;
 static btn_callback_t s_cb;
 static QueueHandle_t s_event_queue = NULL;

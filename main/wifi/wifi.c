@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <esp_timer.h>
 
 static const char *TAG = "AirMic_WiFi";
 static char s_ssid[33] = {0};
@@ -127,16 +128,21 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > send_size) {
         // 使用 PSRAM 分配缓冲区
         buffer = (char *)heap_caps_malloc(send_size, MALLOC_CAP_SPIRAM);
+    } else {
+        ESP_LOGW(TAG, "PSRAM not available, using RAM");
     }
     // 如果 PSRAM 分配失败，尝试使用普通 RAM
     if (!buffer) {
         buffer = (char *)malloc(send_size);
     }
     if (!buffer) {
-        fclose(fd);
+        ESP_LOGE(TAG, "Failed to allocate buffer");
+               fclose(fd);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to allocate buffer");
         return ESP_FAIL;
     }
+
+    int64_t t0 = esp_timer_get_time();
 
     // 一次性读取所有数据
     size_t bytes_read = fread(buffer, 1, send_size, fd);
@@ -148,6 +154,8 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    int64_t t1 = esp_timer_get_time();
+
     // 一次性发送所有数据
     ESP_LOGI(TAG, "Sending file data: %ld bytes", send_size);
     int send_result = httpd_resp_send(req, buffer, send_size);
@@ -157,6 +165,11 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     } else {
         free(buffer);
     }
+
+    int64_t t2 = esp_timer_get_time();
+
+    ESP_LOGI(TAG, "fread: %lldms  send: %lldms  total: %lldms",
+         (t1-t0)/1000, (t2-t1)/1000, (t2-t0)/1000);
 
     if (send_result != ESP_OK) {
         ESP_LOGE(TAG, "File sending failed: %d", send_result);
@@ -308,7 +321,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         // 启动 HTTP 服务器
         esp_err_t err = wifi_start_http_server();
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start HTTP server: %d", err);
+            ESP_LOGE(TAG, "Failed to start HTTP server: %s", esp_err_to_name(err));
         }
         // Trigger callback for status change
         if (s_status_callback) {
@@ -495,6 +508,8 @@ void wifi_set_status_callback(wifi_status_callback_t callback)
 
 esp_err_t wifi_start_http_server(void)
 {
+    esp_err_t err = ESP_OK;
+
     if (s_http_server) {
         ESP_LOGE(TAG, "HTTP server already started");
         return ESP_ERR_INVALID_STATE;
@@ -518,15 +533,16 @@ esp_err_t wifi_start_http_server(void)
     config.max_open_sockets = 4; // 减小最大连接数
     config.lru_purge_enable = true; // 启用 LRU 缓存清理
     config.stack_size = 4096; // 减小任务堆栈大小
-    config.recv_wait_timeout = 60000; // 增加接收超时时间（毫秒）
-    config.send_wait_timeout = 60000; // 增加发送超时时间（毫秒）
+    config.recv_wait_timeout = 30; // 增加接收超时时间（毫秒）
+    config.send_wait_timeout = 30; // 增加发送超时时间（毫秒）
     config.global_user_ctx = s_server_data; // 设置全局用户上下文
     config.enable_so_linger = true; // 启用 SO_LINGER 选项
-    config.linger_timeout = 1000; // 设置 SO_LINGER 超时时间
+    config.linger_timeout = 10; // 设置 SO_LINGER 超时时间
 
     ESP_LOGI(TAG, "Starting HTTP Server on port: '%d'", config.server_port);
-    if (httpd_start(&s_http_server, &config) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTP server!");
+    err = httpd_start(&s_http_server, &config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start HTTP server: %s", esp_err_to_name(err));
         free(s_server_data);
         s_server_data = NULL;
         return ESP_FAIL;
@@ -547,6 +563,8 @@ esp_err_t wifi_start_http_server(void)
         .user_ctx  = s_server_data
     };
     httpd_register_uri_handler(s_http_server, &play_uri);
+
+    ESP_LOGI(TAG, "HTTP server started");
 
     return ESP_OK;
 }
