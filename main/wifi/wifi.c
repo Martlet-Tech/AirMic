@@ -6,6 +6,7 @@
 #include "esp_netif.h"
 #include "esp_http_server.h"
 #include "esp_vfs.h"
+#include "cJSON.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -274,6 +275,77 @@ static esp_err_t play_get_handler(httpd_req_t *req) {
     }
 
     return ESP_OK;
+}
+
+static esp_err_t files_get_handler(httpd_req_t *req) {
+    // 打开SD卡目录
+    DIR *dir = opendir("/sdcard");
+    if (!dir) {
+        ESP_LOGE(TAG, "Failed to open SD card directory");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open SD card directory");
+        return ESP_FAIL;
+    }
+
+    // 计算文件数量
+    int file_count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.' || entry->d_type == DT_DIR) {
+            continue;
+        }
+        file_count++;
+    }
+    rewinddir(dir);
+
+    // 构建JSON响应
+    cJSON *root = cJSON_CreateObject();
+    cJSON *files = cJSON_CreateArray();
+    cJSON_AddItemToObject(root, "files", files);
+    cJSON_AddNumberToObject(root, "count", file_count);
+
+    // 遍历文件，添加到JSON
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.' || entry->d_type == DT_DIR) {
+            continue;
+        }
+
+        // 获取文件大小
+        struct stat stat_buf;
+        char path[265];
+        snprintf(path, sizeof(path), "/sdcard/%s", entry->d_name);
+        if (stat(path, &stat_buf) != 0) {
+            continue;
+        }
+
+        // 创建文件对象
+        cJSON *file_obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(file_obj, "name", entry->d_name);
+        cJSON_AddNumberToObject(file_obj, "size", stat_buf.st_size);
+        cJSON_AddItemToArray(files, file_obj);
+    }
+
+    closedir(dir);
+
+    // 转换为JSON字符串
+    char *json_str = cJSON_Print(root);
+    cJSON_Delete(root);
+
+    if (!json_str) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create JSON");
+        return ESP_FAIL;
+    }
+
+    // 设置响应头
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+    // 发送响应
+    esp_err_t ret = httpd_resp_send(req, json_str, strlen(json_str));
+    free(json_str);
+
+    return ret;
 }
 
 static void print_wifi_status(void)
@@ -564,7 +636,16 @@ esp_err_t wifi_start_http_server(void)
     };
     httpd_register_uri_handler(s_http_server, &play_uri);
 
+    httpd_uri_t files_uri = {
+        .uri       = "/files",
+        .method    = HTTP_GET,
+        .handler   = files_get_handler,
+        .user_ctx  = s_server_data
+    };
+    httpd_register_uri_handler(s_http_server, &files_uri);
+
     ESP_LOGI(TAG, "HTTP server started");
+    ESP_LOGI(TAG, "Registered /files endpoint for file list retrieval");
 
     return ESP_OK;
 }

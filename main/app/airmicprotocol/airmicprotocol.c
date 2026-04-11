@@ -178,14 +178,8 @@ static void handle_get_file_list(void)
 		return;
 	}
 
-	// 构建文件列表响应
-	// 格式: [文件数量(2字节)] + [文件名长度(1字节) + 文件名 + 文件大小(4字节)] * N
-	uint8_t buf[512]; // 限制响应大小
-	uint16_t offset = 0;
+	// 只计算文件数量
 	uint16_t file_count = 0;
-
-	// 预留文件数量的位置
-	offset += 2;
 
 	struct dirent *entry;
 	while ((entry = readdir(dir)) != NULL) {
@@ -202,34 +196,19 @@ static void handle_get_file_list(void)
 			continue;
 		}
 
-		// 检查缓冲区空间
-		uint8_t name_len = strlen(entry->d_name);
-		if (offset + 1 + name_len + 4 > sizeof(buf)) {
-			break; // 缓冲区不足
-		}
-
-		// 添加文件名长度
-		buf[offset++] = name_len;
-		// 添加文件名
-		memcpy(&buf[offset], entry->d_name, name_len);
-		offset += name_len;
-		// 添加文件大小（小端序）
-		buf[offset++] = (stat_buf.st_size >> 0) & 0xFF;
-		buf[offset++] = (stat_buf.st_size >> 8) & 0xFF;
-		buf[offset++] = (stat_buf.st_size >> 16) & 0xFF;
-		buf[offset++] = (stat_buf.st_size >> 24) & 0xFF;
-
 		file_count++;
 	}
 
 	closedir(dir);
 
+	// 构建响应，只包含文件数量
+	uint8_t buf[2];
 	// 写入文件数量（小端序）
 	buf[0] = (file_count >> 0) & 0xFF;
 	buf[1] = (file_count >> 8) & 0xFF;
 
-	ESP_LOGI(TAG, "File list: %d files", file_count);
-	send_resp(CMD_GET_FILE_LIST, RESP_OK, buf, offset);
+	ESP_LOGI(TAG, "File count: %d files", file_count);
+	send_resp(CMD_GET_FILE_LIST, RESP_OK, buf, sizeof(buf));
 }
 
 static void handle_delete_file(const uint8_t *payload, uint8_t len)
