@@ -348,9 +348,9 @@ esp_err_t http_server_start(void) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_open_sockets = 4; // 减小最大连接数
+    config.max_open_sockets = 7; // 减小最大连接数
     config.lru_purge_enable = true; // 启用 LRU 缓存清理
-    config.stack_size = 8192; // 减小任务堆栈大小
+    config.stack_size = 4096*4; // 减小任务堆栈大小
     config.recv_wait_timeout = 30; // 增加接收超时时间（毫秒）
     config.send_wait_timeout = 30; // 增加发送超时时间（毫秒）
     config.global_user_ctx = s_server_data; // 设置全局用户上下文
