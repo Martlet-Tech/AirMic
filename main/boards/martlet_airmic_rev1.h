@@ -1,0 +1,26 @@
+#ifndef __MARTLET_AIRMIC_REV1_H__
+#define __MARTLET_AIRMIC_REV1_H__
+
+#include "driver/gpio.h"
+
+#define PIN_SDIO_D0 GPIO_NUM_10
+#define PIN_SDIO_D1 GPIO_NUM_9
+#define PIN_SDIO_D2 GPIO_NUM_14
+#define PIN_SDIO_D3 GPIO_NUM_13
+#define PIN_SDIO_CLK GPIO_NUM_11
+#define PIN_SDIO_CMD GPIO_NUM_12
+
+#define PIN_LED2812 GPIO_NUM_17
+#define PIN_LED_MONO GPIO_NUM_39
+#define PIN_KEY GPIO_NUM_8
+
+//#define PIN_I2S_WS GPIO_NUM_9
+#define PIN_I2S_CLK GPIO_NUM_26
+#define PIN_I2S_SD GPIO_NUM_21
+
+#define PIN_TX GPIO_NUM_1 // ESP TX
+#define PIN_RX GPIO_NUM_2 // ESP RX
+
+#define FC_UART_PORT UART_NUM_1
+
+#endif
