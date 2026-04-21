@@ -11,15 +11,17 @@
 #include <stdio.h>
 #include <string.h>
 #include "ble_nus.h"
+#include "mic.h"
 
 #define TAG "recorder"
 
 // WAV 参数
 #define WAV_SAMPLE_RATE MIC_SAMPLE_RATE // 48000
 #define WAV_CHANNELS MIC_CHANNELS // 2
-#define WAV_BITS 16 // 存 16bit（从 32bit 截取高 16bit）
-#define WAV_BYTE_RATE (WAV_SAMPLE_RATE * WAV_CHANNELS * WAV_BITS / 8)
-#define WAV_BLOCK_ALIGN (WAV_CHANNELS * WAV_BITS / 8)
+// I2S (ICS43434) = 32bit，PDM (ICS41350) = 16bit
+#define WAV_BITS mic_bits()
+#define WAV_BYTE_RATE (WAV_SAMPLE_RATE * WAV_CHANNELS * mic_bits() / 8)
+#define WAV_BLOCK_ALIGN (WAV_CHANNELS * mic_bits() / 8)
 
 // 每次读取的帧数
 #define READ_BUF_FRAMES 512
@@ -76,139 +78,55 @@ static void wav_header_update(FILE *f, uint32_t data_bytes)
 	fseek(f, 0, SEEK_END);
 }
 
-
-#if 0
-// ── 录音任务 ─────────────────────────────────────────────────
-static void record_task(void *arg)
-{
-	int idx = sdcard_next_index();
-	char path[64];
-	snprintf(path, sizeof(path), "%s/AM_%04d.wav", SD_MOUNT_POINT, idx);
-
-	FILE *f = fopen(path, "wb");
-	if (!f) {
-		ESP_LOGE(TAG, "cannot open %s", path);
-		vTaskDelete(NULL);
-		return;
-	}
-
-	// 先写空头占位
-	wav_header_t h_empty = { 0 };
-	fwrite(&h_empty, sizeof(h_empty), 1, f);
-
-	int32_t *raw = malloc(READ_BUF_BYTES);
-	int16_t *pcm = malloc(READ_BUF_FRAMES * WAV_CHANNELS * sizeof(int16_t));
-	if (!raw || !pcm) {
-		ESP_LOGE(TAG, "malloc failed");
-		fclose(f);
-		free(raw);
-		free(pcm);
-		vTaskDelete(NULL);
-		return;
-	}
-
-	uint32_t data_bytes = 0;
-	int64_t last_hdr_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
-	ESP_LOGI(TAG, "recording → %s", path);
-	led_set_mode(LED_MODE_RECORDING);
-
-	// --- 数字高通滤波器 (HPF) 状态 ---
-	static const float HPF_ALPHA = 0.9805f; 
-	float hpf_x[2] = {0, 0};
-	float hpf_y[2] = {0, 0};
-
-	while (s_recording) {
-		int bytes = mic_read(raw, READ_BUF_BYTES, 100);
-		if (bytes <= 0)
-			continue;
-
-		int samples = bytes / sizeof(int32_t);
-
-		for (int i = 0; i < samples; i++) {
-			int ch = i % 2; 
-			float x = (float)(raw[i] >> 16);
-			
-			float y = HPF_ALPHA * (hpf_y[ch] + x - hpf_x[ch]);
-			
-			hpf_x[ch] = x;
-			hpf_y[ch] = y;
-
-			if (y > 32767.0f) y = 32767.0f;
-			if (y < -32768.0f) y = -32768.0f;
-
-			pcm[i] = (int16_t)y;
-		}
-
-		size_t wb = samples * sizeof(int16_t);
-		fwrite(pcm, 1, wb, f);
-		data_bytes += wb;
-
-		// 每秒刷新文件头，断电保护
-		int64_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-		if (now - last_hdr_ms >= 1000) {
-			wav_header_update(f, data_bytes);
-			last_hdr_ms = now;
-			ESP_LOGD(TAG, "header refreshed, %lu bytes", data_bytes);
-		}
-	}
-
-	// 停止时写最终正确头
-	wav_header_update(f, data_bytes);
-	fclose(f);
-	free(raw);
-	free(pcm);
-
-	ESP_LOGI(TAG, "saved: %s (%lu bytes)", path, data_bytes);
-	led_set_mode(LED_MODE_IDLE);
-	s_record_task = NULL;
-	vTaskDelete(NULL);
-}
-#endif
-
-// 生产者：只管读麦克风，高优先级
 static void mic_capture_task(void *arg)
 {
-	int32_t *raw = malloc(READ_BUF_BYTES);
-	
-	// --- 数字高通滤波器 (HPF) 状态 ---
-	// 截至频率约 150Hz (fs = 48000Hz)
-	// 公式: y[n] = alpha * (y[n-1] + x[n] - x[n-1]), alpha ≈ 0.9805
-	static const float HPF_ALPHA = 0.9805f; 
-	float hpf_x[2] = {0, 0};
-	float hpf_y[2] = {0, 0};
+	// 用 uint8_t 避免类型假设，两种模式都能用
+	uint8_t *raw = malloc(READ_BUF_BYTES);
+
+	static const float HPF_ALPHA = 0.9805f;
+	float hpf_x[2] = { 0, 0 };
+	float hpf_y[2] = { 0, 0 };
+
+	const int bits = mic_bits(); // 编译后是常量，不影响性能
+	const int bytes_per_sample = bits / 8; // 32bit=4, 16bit=2
 
 	while (s_recording) {
 		int bytes = mic_read(raw, READ_BUF_BYTES, 100);
 		if (bytes <= 0)
 			continue;
 
-		int samples = bytes / sizeof(int32_t);
+		int samples = bytes / bytes_per_sample;
 		uint8_t next = (s_ring_head + 1) % RING_BUF_BLOCKS;
 		if (next == s_ring_tail) {
-			ESP_LOGW(TAG, "ring full, drop"); // SD太慢导致
+			ESP_LOGW(TAG, "ring full, drop");
 			continue;
 		}
 		int16_t *dst = s_ring[s_ring_head];
-		
+
 		for (int i = 0; i < samples; i++) {
-			int ch = i % 2; // 交错的立体声：0=左，1=右
-			float x = (float)(raw[i] >> 16);
-			
-			// 应用一阶高通滤波
+			int ch = i % 2;
+			float x;
+
+			if (bits == 32) {
+				// ICS43434：32bit 原始，有效位在高 16bit
+				x = (float)(((int32_t *)raw)[i] >> 16);
+			} else {
+				// ICS41350：PDM 硬件抽取后直接是 16bit PCM
+				x = (float)((int16_t *)raw)[i];
+			}
+
 			float y = HPF_ALPHA * (hpf_y[ch] + x - hpf_x[ch]);
-			
-			// 更新状态
 			hpf_x[ch] = x;
 			hpf_y[ch] = y;
 
-			// 防止浮点转整型的溢出爆音
-			if (y > 32767.0f) y = 32767.0f;
-			if (y < -32768.0f) y = -32768.0f;
+			if (y > 32767.0f)
+				y = 32767.0f;
+			if (y < -32768.0f)
+				y = -32768.0f;
 
 			dst[i] = (int16_t)y;
 		}
-		
+
 		s_ring_head = next;
 		xSemaphoreGive(s_ring_sem);
 	}

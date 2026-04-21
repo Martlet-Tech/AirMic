@@ -1,0 +1,15 @@
+menu "AirMic Driver"
+
+    choice MIC_TYPE
+        prompt "Microphone type"
+        default MIC_TYPE_PDM
+        help
+            Select the microphone hardware installed on this board.
+
+        config MIC_TYPE_I2S
+            bool "ICS43434 (I2S standard, 32-bit, rev0)"
+        config MIC_TYPE_PDM
+            bool "ICS41350 (PDM, 16-bit, rev1)"
+    endchoice
+
+endmenu

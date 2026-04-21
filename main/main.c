@@ -60,6 +60,12 @@ void app_main(void)
 	// 驱动层初始化（传入 bsp 引脚，与硬件解耦）
 	led_init(PIN_LED_MONO);
 	//mic_init(PIN_I2S_WS, PIN_I2S_CLK, PIN_I2S_SD);
+	mic_gpio_t gpio = {
+		.clk = PIN_I2S_CLK, // GPIO26
+		.ws = GPIO_NUM_NC, // PDM 不用
+		.data = PIN_I2S_SD, // GPIO21
+	};
+	mic_init(&gpio);
 	sdcard_mount(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_D0, PIN_SDIO_D1, PIN_SDIO_D2, PIN_SDIO_D3);
 	button_init(PIN_KEY, on_button);
 	recorder_init();

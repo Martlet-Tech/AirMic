@@ -15,7 +15,7 @@
 #define PIN_KEY GPIO_NUM_8
 
 //#define PIN_I2S_WS GPIO_NUM_9
-#define PIN_I2S_CLK GPIO_NUM_26
+#define PIN_I2S_CLK GPIO_NUM_4
 #define PIN_I2S_SD GPIO_NUM_21
 
 #define PIN_TX GPIO_NUM_1 // ESP TX
