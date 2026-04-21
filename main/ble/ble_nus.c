@@ -247,6 +247,8 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
 
 			// 启动RGB LED呼吸变色效果
 			rgb_led_set_mode(RGB_LED_MODE_BREATHING);
+			rgb_color_t color = {0, 255, 0};
+			rgb_led_set_color(color);
 
 			vTaskDelay(pdMS_TO_TICKS(200));
 			ble_bridge_request_fast_connection(g_conn_handle);
@@ -396,7 +398,7 @@ void ble_nus_init(void)
 	ble_svc_gap_device_name_set(DEVICE_NAME);
 
 	// 初始化RGB LED（IO40引脚）
-	rgb_led_init(GPIO_NUM_40);
+	rgb_led_init(PIN_LED2812);
 	// 初始状态为关闭
 	rgb_led_set_mode(RGB_LED_MODE_OFF);
 
