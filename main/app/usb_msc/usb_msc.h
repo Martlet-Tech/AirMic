@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include "driver/gpio.h"
 
 /**
  * USB MSC (Mass Storage Class) 模块
@@ -11,6 +12,8 @@
  *       CONFIG_TINYUSB_MSC_ENABLED=y
  *       CONFIG_TINYUSB_MSC_BUFSIZE=4096
  */
+
+ void usb_msc_init_vbus(gpio_num_t pin);
 
 // 初始化并启动 USB MSC，阻塞直到 USB 断开
 // 在 BOOT_MODE_USB_MSC 分支里调用，不返回（或返回后重启）

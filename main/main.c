@@ -10,6 +10,8 @@
 #include "wifi/wifi.h"
 #include "usb_msc.h"
 #include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "main";
 
@@ -19,22 +21,8 @@ static const char *TAG = "main";
 #define BOOT_MODE_USB_MSC 1
 #define BOOT_MODE_OTA 2 // 预留
 
-static void on_button(btn_event_t event)
-{
-	switch (event) {
-	case BTN_EVENT_SINGLE_CLICK:
-		// 录音模式下：手动开始/停止录音（将来接 recorder）
-		ESP_LOGI(TAG, "single click");
-		recorder_toggle();
-		break;
-	case BTN_EVENT_DOUBLE_CLICK:
-		ESP_LOGI(TAG, "double click- reserved");
-		break;
-	case BTN_EVENT_LONG_PRESS:
-		ESP_LOGI(TAG, "long press - reserved");
-		break;
-	}
-}
+static void vbus_monitor_task(void *arg);
+static void on_button(btn_event_t event);
 
 void app_main(void)
 {
@@ -53,6 +41,7 @@ void app_main(void)
 
 	if (boot_mode == BOOT_MODE_USB_MSC) {
 		ESP_LOGI(TAG, "Boot mode: USB MSC");
+		usb_msc_init_vbus(PIN_VBUS_DETECT); // ← 加这行，必须在 usb_msc_start 之前
 		usb_msc_start(); // 不返回
 		return;
 	}
@@ -66,6 +55,10 @@ void app_main(void)
 		.data = PIN_I2S_SD, // GPIO21
 	};
 	mic_init(&gpio);
+
+	usb_msc_init_vbus(PIN_VBUS_DETECT);
+	xTaskCreate(vbus_monitor_task, "vbus_mon", 2048, NULL, 2, NULL);
+
 	sdcard_mount(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_D0, PIN_SDIO_D1, PIN_SDIO_D2, PIN_SDIO_D3);
 	button_init(PIN_KEY, on_button);
 	recorder_init();
@@ -78,4 +71,40 @@ void app_main(void)
 	ble_nus_init();
 
 	ESP_LOGI(TAG, "AirMic ready.");
+}
+
+static void on_button(btn_event_t event)
+{
+	switch (event) {
+	case BTN_EVENT_SINGLE_CLICK:
+		// 录音模式下：手动开始/停止录音（将来接 recorder）
+		ESP_LOGI(TAG, "single click");
+		recorder_toggle();
+		break;
+	case BTN_EVENT_DOUBLE_CLICK:
+		ESP_LOGI(TAG, "double click- reserved");
+		break;
+	case BTN_EVENT_LONG_PRESS:
+		ESP_LOGI(TAG, "long press - reserved");
+		break;
+	}
+}
+
+static void vbus_monitor_task(void *arg)
+{
+	bool last_state = usb_host_connected();
+
+	while (1) {
+		vTaskDelay(pdMS_TO_TICKS(500)); // 每500ms检测一次
+		bool now = usb_host_connected();
+
+		if (now && !last_state) {
+			// USB 插入：停止录音，切换到 MSC 模式
+			ESP_LOGI("main", "USB inserted, switching to MSC mode...");
+			recorder_stop(); // 如果在录音，先停
+			vTaskDelay(pdMS_TO_TICKS(200));
+			usb_msc_request_switch(); // 写 NVS + 重启
+		}
+		last_state = now;
+	}
 }
