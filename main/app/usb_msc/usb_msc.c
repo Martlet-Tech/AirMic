@@ -1,8 +1,6 @@
 #include "usb_msc.h"
 #include "bsp.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -15,10 +13,6 @@
 #include "sdmmc_cmd.h"
 
 static const char *TAG = "USB_MSC";
-
-// ── NVS 键名 ─────────────────────────────────────────────────
-#define NVS_NAMESPACE "airmic"
-#define NVS_KEY_BOOT "boot_mode"
 
 // boot_mode 值定义（和 main.c 保持一致）
 #define BOOT_MODE_NORMAL 0
@@ -108,14 +102,7 @@ void usb_msc_start(void)
 	// 初始化 SD 卡（不挂 FATFS）
 	if (sdmmc_init_for_msc() != ESP_OK) {
 		ESP_LOGE(TAG, "SD card init failed, cannot start MSC");
-		// 清掉 NVS 标志，下次重启回正常模式
-		usb_msc_request_switch(); // 这里不合适，直接清 NVS
-		nvs_handle_t h;
-		if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-			nvs_set_u8(h, NVS_KEY_BOOT, BOOT_MODE_NORMAL);
-			nvs_commit(h);
-			nvs_close(h);
-		}
+
 		esp_restart();
 		return;
 	}
@@ -163,32 +150,6 @@ void usb_msc_start(void)
 	ESP_LOGI(TAG, "Ejected by host, rebooting to normal mode...");
 	vTaskDelay(pdMS_TO_TICKS(500)); // 给 USB 协议栈时间完成断开
 
-	// 清掉 NVS 标志，重启回正常模式
-	nvs_handle_t h;
-	if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-		nvs_set_u8(h, NVS_KEY_BOOT, BOOT_MODE_NORMAL);
-		nvs_commit(h);
-		nvs_close(h);
-	}
-	esp_restart();
-}
-
-// ── 请求切换到 USB MSC 模式 ──────────────────────────────────
-void usb_msc_request_switch(void)
-{
-	ESP_LOGI(TAG, "Requesting switch to USB MSC mode...");
-
-	nvs_handle_t h;
-	esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-	if (ret != ESP_OK) {
-		ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(ret));
-		return;
-	}
-	nvs_set_u8(h, NVS_KEY_BOOT, BOOT_MODE_USB_MSC);
-	nvs_commit(h);
-	nvs_close(h);
-
-	vTaskDelay(pdMS_TO_TICKS(200)); // 等 NVS 写完
 	esp_restart();
 }
 

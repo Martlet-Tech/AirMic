@@ -30,21 +30,15 @@ void app_main(void)
 
 	ESP_ERROR_CHECK(nvs_flash_init());
 
-	uint8_t boot_mode = BOOT_MODE_NORMAL;
-	nvs_handle_t h;
-	if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-		nvs_get_u8(h, NVS_KEY_BOOT, &boot_mode);
-		nvs_set_u8(h, NVS_KEY_BOOT, BOOT_MODE_NORMAL); // 清掉
-		nvs_commit(h);
-		nvs_close(h);
-	}
+	usb_msc_init_vbus(PIN_VBUS_DETECT);
+	vTaskDelay(pdMS_TO_TICKS(100));
 
-	if (boot_mode == BOOT_MODE_USB_MSC) {
-		ESP_LOGI(TAG, "Boot mode: USB MSC");
-		usb_msc_init_vbus(PIN_VBUS_DETECT); // ← 加这行，必须在 usb_msc_start 之前
-		usb_msc_start(); // 不返回
+	if (usb_host_connected()) {
+		ESP_LOGI(TAG, "USB detected, entering MSC mode");
+		usb_msc_start();
 		return;
 	}
+	xTaskCreate(vbus_monitor_task, "vbus_mon", 2048, NULL, 2, NULL);
 
 	// 驱动层初始化（传入 bsp 引脚，与硬件解耦）
 	led_init(PIN_LED_MONO);
@@ -55,9 +49,6 @@ void app_main(void)
 		.data = PIN_I2S_SD, // GPIO21
 	};
 	mic_init(&gpio);
-
-	usb_msc_init_vbus(PIN_VBUS_DETECT);
-	xTaskCreate(vbus_monitor_task, "vbus_mon", 2048, NULL, 2, NULL);
 
 	sdcard_mount(PIN_SDIO_CLK, PIN_SDIO_CMD, PIN_SDIO_D0, PIN_SDIO_D1, PIN_SDIO_D2, PIN_SDIO_D3);
 	button_init(PIN_KEY, on_button);
@@ -92,19 +83,22 @@ static void on_button(btn_event_t event)
 
 static void vbus_monitor_task(void *arg)
 {
-	bool last_state = usb_host_connected();
+	bool last = usb_host_connected();
 
 	while (1) {
-		vTaskDelay(pdMS_TO_TICKS(500)); // 每500ms检测一次
+		vTaskDelay(pdMS_TO_TICKS(200));
 		bool now = usb_host_connected();
 
-		if (now && !last_state) {
-			// USB 插入：停止录音，切换到 MSC 模式
-			ESP_LOGI("main", "USB inserted, switching to MSC mode...");
-			recorder_stop(); // 如果在录音，先停
+		if (now != last) {
 			vTaskDelay(pdMS_TO_TICKS(200));
-			usb_msc_request_switch(); // 写 NVS + 重启
+			bool confirmed = usb_host_connected(); // 重新采样
+			if (confirmed != last) { // 连续600ms确认才重启
+				ESP_LOGI("main", "VBUS changed, rebooting...");
+				recorder_stop();
+				vTaskDelay(pdMS_TO_TICKS(200));
+				esp_restart();
+			}
 		}
-		last_state = now;
+		last = now;
 	}
 }
