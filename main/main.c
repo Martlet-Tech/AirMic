@@ -12,6 +12,7 @@
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_ota_ops.h"
 
 static const char *TAG = "main";
 
@@ -26,6 +27,11 @@ static void on_button(btn_event_t event);
 
 void app_main(void)
 {
+	const esp_partition_t *running = esp_ota_get_running_partition();
+	if (running->type == ESP_PARTITION_TYPE_APP && running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+		esp_ota_mark_app_valid_cancel_rollback();
+	}
+
 	ESP_LOGI(TAG, "AirMic starting...");
 
 	ESP_ERROR_CHECK(nvs_flash_init());
